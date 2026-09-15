@@ -26,10 +26,12 @@ function prepareSprite(scene, key, { stripWaterBottom = 0.12 } = {}) {
   const bg = [0, 1, 2].map((c) => Math.round(corners.reduce((s, p) => s + p[c], 0) / 4));
 
   const nearBg = (r, g, b) => {
+    // Only treat as backdrop if close to magenta/pink corner color — not grey hull
+    if (bg[0] < 160 || bg[2] < 140) return false;
     const dr = r - bg[0];
     const dg = g - bg[1];
     const db = b - bg[2];
-    return Math.sqrt(dr * dr + dg * dg + db * db) < 42;
+    return Math.sqrt(dr * dr + dg * dg + db * db) < 38;
   };
 
   const waterLineY = Math.floor(h * (1 - stripWaterBottom));
@@ -134,10 +136,8 @@ export class BootScene extends Phaser.Scene {
   }
 
   create() {
-    // Cargo: slight bottom water strip OK. War: almost no water strip (grey hull).
     prepareSprite(this, 'ship-cargo', { stripWaterBottom: 0.14 });
-    // War art often includes a sea strip under the hull — cut only blue water, keep grey paint
-    prepareSprite(this, 'ship-war', { stripWaterBottom: 0.32 });
+    prepareSprite(this, 'ship-war', { stripWaterBottom: 0.22 });
     keyBlackToAlpha(this, 'explosion', 32);
 
     makeParticleDot(this, 'spark', 0xffdd66, 5);

@@ -17,6 +17,8 @@ export class GameScene extends Phaser.Scene {
 
   create() {
     this.aimX = W / 2;
+    this.aimTargetX = W / 2;
+    this.aimSmooth = 10; // выше = быстрее догоняет курсор
     this.shotsLeft = MAX_SHOTS;
     this.score = 0;
     this.canFire = true;
@@ -32,9 +34,9 @@ export class GameScene extends Phaser.Scene {
     this.ships = this.add.group();
     this.torpedoes = this.add.group();
 
-    this.spawnShip(220, 1);
-    this.spawnShip(520, -1);
-    this.spawnShip(780, 1);
+    this.spawnShip(200, 1, 'ship-cargo');
+    this.spawnShip(480, -1, 'ship-war');
+    this.spawnShip(760, 1, 'ship-war');
 
     this.drawFrame();
     this.drawReticle();
@@ -63,34 +65,58 @@ export class GameScene extends Phaser.Scene {
     this.world.add(bg);
   }
 
-  spawnShip(x, dir) {
-    const lane = Phaser.Math.Between(0, 2);
-    const y = WATERLINE + 4 + lane * 5;
-    const key = Math.random() < 0.55 ? 'ship-cargo' : 'ship-war';
+  spawnShip(x, dir, forcedKey = null) {
+    // 0 = далеко у горизонта, 3 = близко к игроку
+    const lane = Phaser.Math.Between(0, 3);
+    const y = WATERLINE - 8 + lane * 16;
+    const key = forcedKey || (Math.random() < 0.5 ? 'ship-cargo' : 'ship-war');
 
-    const foam = this.add.ellipse(x, WATERLINE + 2 + lane * 5, 100 - lane * 14, 11, 0xffffff, 0.25);
+    const foamW = 70 + lane * 18;
+    const foam = this.add.ellipse(x, y + 2, foamW, 8 + lane * 2, 0xffffff, 0.18 + lane * 0.04);
     this.world.add(foam);
 
     const ship = this.add.image(x, y, key);
     ship.setOrigin(0.5, 0.98);
-    const targetW = 160 - lane * 24;
+    const targetW = 85 + lane * 32 + Phaser.Math.Between(-8, 12);
     ship.setScale(targetW / Math.max(1, ship.width));
-    // Art facing: cargo → right, war → left. Flip so bow matches movement.
-    if (key === 'ship-war') ship.setFlipX(dir > 0);
-    else ship.setFlipX(dir < 0);
+    this.applyShipFacing(ship, key, dir);
     ship.setDepth(10 + lane);
     foam.setDepth(9 + lane);
 
+    const base = 12 + lane * 14;
+    const speed = base + Math.random() * (16 + lane * 10);
+
+    // Разворот редко: у части кораблей вообще никогда, у остальных — через длинный интервал
+    const mayTurn = Math.random() < 0.28;
+    const turnIn = mayTurn ? Phaser.Math.Between(14000, 32000) : 999999;
+
     ship.setData({
       dir,
-      speed: 28 + Math.random() * 22,
+      speed,
       alive: true,
       lane,
+      key,
       hitHalf: ship.displayWidth * 0.36,
       foam,
+      turnIn,
+      turnsLeft: mayTurn ? Phaser.Math.Between(1, 2) : 0,
     });
     this.world.add(ship);
     this.ships.add(ship);
+  }
+
+  applyShipFacing(ship, key, dir) {
+    if (key === 'ship-war') ship.setFlipX(dir > 0);
+    else ship.setFlipX(dir < 0);
+  }
+
+  reverseShip(ship) {
+    const dir = -ship.getData('dir');
+    ship.setData('dir', dir);
+    this.applyShipFacing(ship, ship.getData('key'), dir);
+    const lane = ship.getData('lane') || 0;
+    const base = 12 + lane * 14;
+    ship.setData('speed', base + Math.random() * (16 + lane * 10));
   }
 
   drawFrame() {
@@ -218,7 +244,12 @@ export class GameScene extends Phaser.Scene {
   }
 
   setAimX(x) {
-    this.aimX = Phaser.Math.Clamp(x, AIM_MIN, AIM_MAX);
+    this.aimTargetX = Phaser.Math.Clamp(x, AIM_MIN, AIM_MAX);
+  }
+
+  applyAim(delta) {
+    const t = 1 - Math.exp(-this.aimSmooth * (delta / 1000));
+    this.aimX = Phaser.Math.Linear(this.aimX, this.aimTargetX, t);
     if (this.reticle) this.reticle.x = this.aimX;
   }
 
@@ -318,17 +349,32 @@ export class GameScene extends Phaser.Scene {
       if (this.cursors.left.isDown || this.keys.A.isDown || this.holdLeft) turn -= 1;
       if (this.cursors.right.isDown || this.keys.D.isDown || this.holdRight) turn += 1;
       turn += this.gyro.sample();
-      if (turn) this.setAimX(this.aimX + turn * 280 * (delta / 1000));
+      if (turn) this.setAimX(this.aimTargetX + turn * 280 * (delta / 1000));
     }
+
+    this.applyAim(delta);
 
     if (this.gameOver) return;
 
     this.ships.getChildren().forEach((ship) => {
       if (!ship.getData('alive')) return;
+
+      let turnIn = ship.getData('turnIn') - delta;
+      if (turnIn <= 0 && ship.getData('turnsLeft') > 0) {
+        this.reverseShip(ship);
+        ship.setData('turnsLeft', ship.getData('turnsLeft') - 1);
+        turnIn =
+          ship.getData('turnsLeft') > 0
+            ? Phaser.Math.Between(18000, 40000)
+            : 999999;
+      }
+      ship.setData('turnIn', turnIn);
+
       ship.x += ship.getData('dir') * ship.getData('speed') * (delta / 1000);
       const foam = ship.getData('foam');
       if (foam?.active) foam.x = ship.x;
-      if (ship.x < -120 || ship.x > W + 120) {
+
+      if (ship.x < -140 || ship.x > W + 140) {
         foam?.destroy();
         ship.destroy();
       }
