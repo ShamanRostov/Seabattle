@@ -1,44 +1,4 @@
-# Unity
-[Ll]ibrary/
-[Tt]emp/
-[Oo]bj/
-[Bb]uild/
-[Bb]uilds/
-[Ll]ogs/
-[Uu]ser[Ss]ettings/
-[Mm]emoryCaptures/
-[Rr]ecordings/
-*.csproj
-*.unityproj
-*.sln
-*.suo
-*.tmp
-*.user
-*.pidb
-*.booproj
-*.svd
-*.pdb
-*.mdb
-*.opendb
-*.VC.db
-*.pidb.meta
-*.pdb.meta
-*.mdb.meta
-sysinfo.txt
-crashlytics-build.properties
-/[Aa]ssets/AssetStoreTools*
-/[Aa]ssets/Plugins/Editor/JetBrains*
-.vs/
-.gradle/
-ExportedObj/
-.consulo/
-*.apk
-*.aab
-*.unitypackage
-*.app
-*.symbols.json
-
-# Node / web (если позже Phaser)
+# Dependencies
 node_modules/
 dist/
 .DS_Store
@@ -47,6 +7,12 @@ dist/
 .env.*
 !/.env.example
 
-# OS
+# OS / IDE
 Thumbs.db
 Desktop.ini
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Vite
+*.local
