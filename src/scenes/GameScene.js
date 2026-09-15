@@ -3,12 +3,26 @@ import { createGyroAim } from '../input/gyro.js';
 
 const W = 960;
 const H = 540;
-const MAX_SHOTS = 10;
+const MAX_LIVES = 5;
 const TORPEDO_MS = 1000;
+const ENEMY_TORPEDO_MS = 1500;
 const WATERLINE = 175;
 const SEA_HORIZON_T = 0.62;
 const AIM_MIN = 80;
 const AIM_MAX = W - 80;
+const PLAYER_EDGE_Y = H - 48;
+const TORPEDO_HIT_RADIUS = 28;
+const CRATE_LAND_MS = 2000; // окно на торпеду после приводнения
+const CRATE_FALL_MS = 3800;
+
+/** Очки за тип корабля + бонус за дальнюю дистанцию (lane 0 = далеко). */
+const SHIP_SCORE = {
+  'ship-cargo': 100, // торговый — проще
+  'ship-war': 250, // военный стреляет
+  'ship-sub': 400, // лодка — быстрее / опаснее
+};
+const LANE_BONUS = [80, 50, 25, 0]; // далеко → близко
+const INTERCEPT_SCORE = 75; // сбил вражескую торпеду
 
 export class GameScene extends Phaser.Scene {
   constructor() {
@@ -18,8 +32,8 @@ export class GameScene extends Phaser.Scene {
   create() {
     this.aimX = W / 2;
     this.aimTargetX = W / 2;
-    this.aimSmooth = 10; // выше = быстрее догоняет курсор
-    this.shotsLeft = MAX_SHOTS;
+    this.aimSmooth = 10;
+    this.lives = MAX_LIVES;
     this.score = 0;
     this.canFire = true;
     this.gameOver = false;
@@ -33,10 +47,13 @@ export class GameScene extends Phaser.Scene {
     this.drawSea();
     this.ships = this.add.group();
     this.torpedoes = this.add.group();
+    this.enemyTorpedoes = this.add.group();
+    this.missiles = this.add.group();
+    this.lifeCrate = null;
 
     this.spawnShip(200, 1, 'ship-cargo');
     this.spawnShip(480, -1, 'ship-war');
-    this.spawnShip(760, 1, 'ship-war');
+    this.spawnShip(760, 1, 'ship-sub');
 
     this.drawFrame();
     this.drawReticle();
@@ -54,6 +71,13 @@ export class GameScene extends Phaser.Scene {
       },
     });
 
+    this.time.delayedCall(9000, () => this.trySpawnLifeCrate());
+    this.time.addEvent({
+      delay: 16000,
+      loop: true,
+      callback: () => this.trySpawnLifeCrate(),
+    });
+
     this.time.delayedCall(4500, () => {
       if (this.hint?.active) this.tweens.add({ targets: this.hint, alpha: 0, duration: 500 });
     });
@@ -69,7 +93,10 @@ export class GameScene extends Phaser.Scene {
     // 0 = далеко у горизонта, 3 = близко к игроку
     const lane = Phaser.Math.Between(0, 3);
     const y = WATERLINE - 8 + lane * 16;
-    const key = forcedKey || (Math.random() < 0.5 ? 'ship-cargo' : 'ship-war');
+    const roll = Math.random();
+    const key =
+      forcedKey ||
+      (roll < 0.38 ? 'ship-cargo' : roll < 0.72 ? 'ship-war' : 'ship-sub');
 
     const foamW = 70 + lane * 18;
     const foam = this.add.ellipse(x, y + 2, foamW, 8 + lane * 2, 0xffffff, 0.18 + lane * 0.04);
@@ -77,18 +104,23 @@ export class GameScene extends Phaser.Scene {
 
     const ship = this.add.image(x, y, key);
     ship.setOrigin(0.5, 0.98);
-    const targetW = 85 + lane * 32 + Phaser.Math.Between(-8, 12);
+    const sizeMul = key === 'ship-sub' ? 0.82 : 1;
+    const targetW = (85 + lane * 32 + Phaser.Math.Between(-8, 12)) * sizeMul;
     ship.setScale(targetW / Math.max(1, ship.width));
     this.applyShipFacing(ship, key, dir);
     ship.setDepth(10 + lane);
     foam.setDepth(9 + lane);
 
-    const base = 12 + lane * 14;
+    const base = 12 + lane * 14 + (key === 'ship-sub' ? 8 : 0);
     const speed = base + Math.random() * (16 + lane * 10);
 
     // Разворот редко: у части кораблей вообще никогда, у остальных — через длинный интервал
     const mayTurn = Math.random() < 0.28;
     const turnIn = mayTurn ? Phaser.Math.Between(14000, 32000) : 999999;
+
+    const canFireTorpedo = key === 'ship-war' || key === 'ship-sub';
+    // Иногда грузовой запускает ракету (не раньше 3 сек в кадре)
+    const mayLaunchMissile = key === 'ship-cargo' && Math.random() < 0.32;
 
     ship.setData({
       dir,
@@ -96,16 +128,25 @@ export class GameScene extends Phaser.Scene {
       alive: true,
       lane,
       key,
-      hitHalf: ship.displayWidth * 0.36,
+      hitHalf: ship.displayWidth * (key === 'ship-sub' ? 0.42 : 0.36),
       foam,
       turnIn,
       turnsLeft: mayTurn ? Phaser.Math.Between(1, 2) : 0,
+      visibleMs: 0,
+      fireAfterMs: canFireTorpedo
+        ? Phaser.Math.Between(key === 'ship-sub' ? 1500 : 2000, key === 'ship-sub' ? 4000 : 5000)
+        : mayLaunchMissile
+          ? Phaser.Math.Between(3000, 6500)
+          : 0,
+      hasFired: false,
+      weapon: canFireTorpedo ? 'torpedo' : mayLaunchMissile ? 'missile' : null,
     });
     this.world.add(ship);
     this.ships.add(ship);
   }
 
   applyShipFacing(ship, key, dir) {
+    // Спрайты: war — нос слева; cargo/sub — нос справа
     if (key === 'ship-war') ship.setFlipX(dir > 0);
     else ship.setFlipX(dir < 0);
   }
@@ -115,7 +156,8 @@ export class GameScene extends Phaser.Scene {
     ship.setData('dir', dir);
     this.applyShipFacing(ship, ship.getData('key'), dir);
     const lane = ship.getData('lane') || 0;
-    const base = 12 + lane * 14;
+    const key = ship.getData('key');
+    const base = 12 + lane * 14 + (key === 'ship-sub' ? 8 : 0);
     ship.setData('speed', base + Math.random() * (16 + lane * 10));
   }
 
@@ -153,24 +195,32 @@ export class GameScene extends Phaser.Scene {
   drawHud() {
     const style = { fontFamily: 'Segoe UI, system-ui, sans-serif', color: '#ff5a5a' };
 
-    this.add.text(56, 40, 'ТОРПЕДЫ', { ...style, fontSize: '16px', fontStyle: '600' });
-    this.shotTexts = [];
-    for (let i = 1; i <= MAX_SHOTS; i += 1) {
-      this.shotTexts.push(
-        this.add.text(150 + (i - 1) * 28, 40, String(i), { ...style, fontSize: '18px' }).setOrigin(0.5, 0),
-      );
-    }
+    this.add.text(56, 40, 'ОЧКИ', { ...style, fontSize: '16px', fontStyle: '600' });
+    this.scoreLabel = this.add.text(130, 36, '0', {
+      fontFamily: 'Segoe UI, system-ui, sans-serif',
+      fontSize: '28px',
+      color: '#ffffff',
+      fontStyle: '700',
+      stroke: '#000000',
+      strokeThickness: 4,
+    });
 
-    this.add.text(W / 2, 460, 'ПОПАДАНИЯ', { ...style, fontSize: '15px', fontStyle: '600' }).setOrigin(0.5);
-    this.scoreTexts = [];
-    for (let i = 1; i <= MAX_SHOTS; i += 1) {
-      this.scoreTexts.push(
-        this.add.text(300 + (i - 1) * 36, 486, String(i), { ...style, fontSize: '18px' }).setOrigin(0.5),
-      );
+    this.hearts = [];
+    for (let i = 0; i < MAX_LIVES; i += 1) {
+      const heart = this.add
+        .text(56 + i * 36, 78, '♥', {
+          fontFamily: 'Segoe UI, system-ui, sans-serif',
+          fontSize: '28px',
+          color: '#ff2d4a',
+          stroke: '#4a0000',
+          strokeThickness: 3,
+        })
+        .setOrigin(0, 0);
+      this.hearts.push(heart);
     }
 
     this.hint = this.add
-      .text(W / 2, 400, 'Мышь двигает прицел   ЛКМ / пробел — огонь   R — заново', {
+      .text(W / 2, 400, 'Мышь — прицел   ЛКМ / пробел — огонь   R — заново', {
         fontFamily: 'Segoe UI, system-ui, sans-serif',
         fontSize: '14px',
         color: '#fff',
@@ -182,11 +232,12 @@ export class GameScene extends Phaser.Scene {
     this.gameOverText = this.add
       .text(W / 2, 200, 'ИГРА ОКОНЧЕНА', {
         fontFamily: 'Segoe UI, system-ui, sans-serif',
-        fontSize: '42px',
+        fontSize: '36px',
         color: '#fff',
         fontStyle: '700',
         stroke: '#000',
         strokeThickness: 6,
+        align: 'center',
       })
       .setOrigin(0.5)
       .setVisible(false);
@@ -304,43 +355,443 @@ export class GameScene extends Phaser.Scene {
   }
 
   tryFire() {
-    if (this.gameOver || !this.canFire || this.shotsLeft <= 0) return;
-    this.shotsLeft -= 1;
+    if (this.gameOver || !this.canFire) return;
+    // Пока своя торпеда в полёте — вторую нельзя
+    if (this.torpedoes.countActive(true) > 0) return;
+
     this.canFire = false;
-    this.refreshHud();
+    this.aimX = this.aimTargetX;
+    if (this.reticle) this.reticle.x = this.aimX;
 
     const aimX = this.aimX;
-    const startY = H - 70;
-    const torpedo = this.add.ellipse(aimX, startY, 9, 26, 0xffe08a);
-    torpedo.setStrokeStyle(1, 0xff9f1a);
-    torpedo.setData({ progress: 0, aimX, startY, hitChecked: false });
-    torpedo.setDepth(50);
+    const startY = PLAYER_EDGE_Y - 10;
+    const torpedo = this.makeTorpedoSprite(aimX, startY, { angle: -90, lengthPx: 108 });
+    torpedo.setData({
+      progress: 0,
+      aimX,
+      startY,
+      hitChecked: false,
+      startScale: torpedo.getData('startScale'),
+      trail: torpedo.getData('trail'),
+      enemy: false,
+    });
     this.torpedoes.add(torpedo);
 
-    this.time.delayedCall(450, () => {
+    this.time.delayedCall(200, () => {
       this.canFire = true;
-      if (this.shotsLeft <= 0 && !this.gameOver) this.endGame();
-    });
-  }
-
-  highlight(texts, n) {
-    texts.forEach((t, i) => {
-      const on = n > 0 && i + 1 === n;
-      t.setColor(on ? '#ffffff' : '#ff5a5a');
-      t.setBackgroundColor(on ? '#b91c1c' : null);
     });
   }
 
   refreshHud() {
-    this.highlight(this.shotTexts, this.shotsLeft);
-    this.highlight(this.scoreTexts, this.score);
+    if (this.scoreLabel) this.scoreLabel.setText(String(this.score));
   }
 
-  endGame() {
+  pointsForShip(ship) {
+    const key = ship.getData('key') || 'ship-cargo';
+    const lane = ship.getData('lane') || 0;
+    return (SHIP_SCORE[key] || 100) + (LANE_BONUS[lane] || 0);
+  }
+
+  addScore(points, x, y) {
+    this.score += points;
+    this.refreshHud();
+    if (x != null && y != null) {
+      const popup = this.add
+        .text(x, y, `+${points}`, {
+          fontFamily: 'Segoe UI, system-ui, sans-serif',
+          fontSize: '22px',
+          color: '#ffe566',
+          fontStyle: '700',
+          stroke: '#000',
+          strokeThickness: 4,
+        })
+        .setOrigin(0.5)
+        .setDepth(120);
+      this.tweens.add({
+        targets: popup,
+        y: y - 40,
+        alpha: 0,
+        duration: 700,
+        ease: 'Cubic.easeOut',
+        onComplete: () => popup.destroy(),
+      });
+    }
+  }
+
+  loseLife() {
+    if (this.lives <= 0) return;
+    this.lives -= 1;
+    const heart = this.hearts[this.lives];
+    if (heart?.active) {
+      this.tweens.add({
+        targets: heart,
+        scale: 1.6,
+        alpha: 0,
+        duration: 280,
+        onComplete: () => heart.setVisible(false),
+      });
+    }
+  }
+
+  gainLife() {
+    if (this.lives >= MAX_LIVES) return false;
+    const heart = this.hearts[this.lives];
+    this.lives += 1;
+    if (heart?.active) {
+      heart.setVisible(true);
+      heart.setAlpha(1);
+      heart.setScale(0.4);
+      this.tweens.add({
+        targets: heart,
+        scale: 1,
+        duration: 280,
+        ease: 'Back.easeOut',
+      });
+    }
+    return true;
+  }
+
+  trySpawnLifeCrate() {
+    if (this.gameOver) return;
+    if (this.lives >= MAX_LIVES) return;
+    if (this.lifeCrate?.active) return;
+    this.spawnLifeCrate(Phaser.Math.Between(160, W - 160));
+  }
+
+  spawnLifeCrate(x) {
+    if (this.lifeCrate?.active) this.destroyLifeCrate(false);
+
+    const startY = 36;
+    const landY = WATERLINE - 2;
+    const root = this.add.container(x, startY);
+    root.setDepth(45);
+
+    const canopy = this.add.graphics();
+    canopy.fillStyle(0xe8eef5, 0.95);
+    canopy.beginPath();
+    canopy.moveTo(-34, -8);
+    canopy.lineTo(-28, -28);
+    canopy.lineTo(0, -36);
+    canopy.lineTo(28, -28);
+    canopy.lineTo(34, -8);
+    canopy.closePath();
+    canopy.fillPath();
+    canopy.lineStyle(2, 0xc45a4a, 1);
+    canopy.strokePath();
+    canopy.lineStyle(1.5, 0xc45a4a, 0.9);
+    for (let i = -2; i <= 2; i += 1) {
+      canopy.lineBetween(i * 12, -30, i * 6, -8);
+    }
+
+    const cords = this.add.graphics();
+    cords.lineStyle(1.5, 0xd8c8a0, 0.85);
+    cords.lineBetween(-26, -8, -10, 10);
+    cords.lineBetween(26, -8, 10, 10);
+    cords.lineBetween(-8, -8, -4, 10);
+    cords.lineBetween(8, -8, 4, 10);
+
+    const box = this.add.graphics();
+    box.fillStyle(0xb8894a, 1);
+    box.fillRoundedRect(-14, 10, 28, 24, 3);
+    box.lineStyle(2, 0x6e4a22, 1);
+    box.strokeRoundedRect(-14, 10, 28, 24, 3);
+    box.lineStyle(1.5, 0x8a6230, 1);
+    box.lineBetween(-14, 22, 14, 22);
+    box.lineBetween(0, 10, 0, 34);
+    box.fillStyle(0xff2d4a, 1);
+    box.fillCircle(0, 22, 7);
+    box.fillStyle(0xffffff, 1);
+    box.fillRect(-4, 20, 8, 4);
+    box.fillRect(-1.5, 17.5, 3, 9);
+
+    root.add([canopy, cords, box]);
+
+    root.setData({
+      alive: true,
+      landed: false,
+      landLeft: CRATE_LAND_MS,
+      hitHalf: 28,
+      canopy,
+      cords,
+      box,
+      swayT: Math.random() * Math.PI * 2,
+      baseX: x,
+    });
+
+    this.lifeCrate = root;
+    this.world.add(root);
+
+    this.tweens.add({
+      targets: root,
+      y: landY,
+      duration: CRATE_FALL_MS,
+      ease: 'Sine.easeIn',
+      onComplete: () => this.onLifeCrateLanded(root),
+    });
+  }
+
+  onLifeCrateLanded(crate) {
+    if (!crate?.active || !crate.getData('alive')) return;
+    crate.setData('landed', true);
+    crate.setData('landLeft', CRATE_LAND_MS);
+
+    const canopy = crate.getData('canopy');
+    const cords = crate.getData('cords');
+    if (canopy) {
+      this.tweens.add({
+        targets: canopy,
+        alpha: 0,
+        y: -20,
+        scaleX: 1.2,
+        scaleY: 0.3,
+        duration: 280,
+        onComplete: () => canopy.destroy(),
+      });
+    }
+    if (cords) {
+      this.tweens.add({
+        targets: cords,
+        alpha: 0,
+        duration: 200,
+        onComplete: () => cords.destroy(),
+      });
+    }
+
+    const splash = this.add.ellipse(crate.x, WATERLINE, 10, 4, 0xffffff, 0.55).setDepth(44);
+    this.tweens.add({
+      targets: splash,
+      scaleX: 4,
+      scaleY: 2,
+      alpha: 0,
+      duration: 360,
+      onComplete: () => splash.destroy(),
+    });
+
+    this.tweens.add({
+      targets: crate,
+      y: WATERLINE + 4,
+      duration: 420,
+      yoyo: true,
+      ease: 'Sine.easeInOut',
+    });
+  }
+
+  destroyLifeCrate(sinking = true) {
+    const crate = this.lifeCrate;
+    this.lifeCrate = null;
+    if (!crate?.active) return;
+    crate.setData('alive', false);
+    if (!sinking) {
+      crate.destroy();
+      return;
+    }
+    this.tweens.add({
+      targets: crate,
+      y: crate.y + 36,
+      alpha: 0,
+      duration: 450,
+      onComplete: () => {
+        if (crate.active) crate.destroy();
+      },
+    });
+  }
+
+  collectLifeCrate() {
+    const crate = this.lifeCrate;
+    if (!crate?.active || !crate.getData('alive') || !crate.getData('landed')) return false;
+    const x = crate.x;
+    const y = crate.y;
+    this.spawnHit(x, WATERLINE - 8);
+    this.destroyLifeCrate(false);
+    if (this.gainLife()) {
+      const popup = this.add
+        .text(x, y - 18, '+♥', {
+          fontFamily: 'Segoe UI, system-ui, sans-serif',
+          fontSize: '28px',
+          color: '#ff6b81',
+          fontStyle: '700',
+          stroke: '#000',
+          strokeThickness: 4,
+        })
+        .setOrigin(0.5)
+        .setDepth(120);
+      this.tweens.add({
+        targets: popup,
+        y: y - 56,
+        alpha: 0,
+        duration: 800,
+        ease: 'Cubic.easeOut',
+        onComplete: () => popup.destroy(),
+      });
+    }
+    return true;
+  }
+
+  endGame(reason = 'ИГРА ОКОНЧЕНА') {
     this.gameOver = true;
+    this.gameOverText.setText(reason);
     this.gameOverText.setVisible(true);
     this.restartText.setVisible(true);
     if (this.game.canvas) this.game.canvas.style.cursor = 'default';
+  }
+
+  destroyShip(ship) {
+    if (!ship) return;
+    const foam = ship.getData('foam');
+    if (foam?.active) foam.destroy();
+    ship.setData('alive', false);
+    if (ship.active) ship.destroy();
+  }
+
+  makeTorpedoSprite(x, y, { angle, tint = null, lengthPx = 108 } = {}) {
+    const torpedo = this.add.image(x, y, 'torpedo');
+    torpedo.setOrigin(0.5, 0.55);
+    torpedo.setAngle(angle);
+    const startScale = lengthPx / Math.max(1, torpedo.width);
+    torpedo.setScale(startScale);
+    torpedo.setDepth(55);
+    if (tint != null) torpedo.setTint(tint);
+
+    let trail = null;
+    if (this.textures.exists('bubble')) {
+      const towardBottom = angle > 0;
+      trail = this.add.particles(0, 0, 'bubble', {
+        speed: { min: 12, max: 48 },
+        angle: towardBottom ? { min: 255, max: 285 } : { min: 75, max: 105 },
+        lifespan: { min: 320, max: 600 },
+        scale: { start: 0.55, end: 0 },
+        alpha: { start: 0.55, end: 0 },
+        frequency: 24,
+        quantity: 2,
+        follow: torpedo,
+        followOffset: { x: 0, y: towardBottom ? -Math.round(lengthPx * 0.35) : Math.round(lengthPx * 0.35) },
+      });
+      trail.setDepth(53);
+    }
+
+    torpedo.setData({ startScale, trail });
+    return torpedo;
+  }
+
+  fireEnemyTorpedo(ship) {
+    if (this.gameOver || !ship.active || !ship.getData('alive')) return;
+    // Только из видимой зоны
+    if (ship.x < 70 || ship.x > W - 70) return;
+
+    const startX = ship.x;
+    const startY = ship.y - 6;
+    const endX = Phaser.Math.Clamp(this.aimX, AIM_MIN, AIM_MAX);
+    const endY = PLAYER_EDGE_Y;
+    const angle = Phaser.Math.RadToDeg(Math.atan2(endY - startY, endX - startX));
+    const torpedo = this.makeTorpedoSprite(startX, startY, {
+      angle,
+      tint: 0xff8866,
+      lengthPx: 96,
+    });
+    torpedo.setData({
+      progress: 0,
+      startX,
+      endX,
+      startY,
+      endY,
+      hitChecked: false,
+      startScale: torpedo.getData('startScale'),
+      trail: torpedo.getData('trail'),
+      enemy: true,
+    });
+    this.enemyTorpedoes.add(torpedo);
+  }
+
+  fireCargoMissile(ship) {
+    if (this.gameOver || !ship.active || !ship.getData('alive')) return;
+    if (ship.x < 70 || ship.x > W - 70) return;
+
+    const startX = ship.x;
+    const startY = ship.y - 18;
+    const endX = Phaser.Math.Clamp(this.aimX, AIM_MIN, AIM_MAX);
+    const endY = PLAYER_EDGE_Y;
+    const angle = Phaser.Math.RadToDeg(Math.atan2(endY - startY, endX - startX));
+
+    const missile = this.add.container(startX, startY);
+    missile.setDepth(58);
+    missile.setAngle(angle - 90); // graphics drawn pointing up
+
+    const body = this.add.graphics();
+    body.fillStyle(0xf0f0f0, 1);
+    body.fillRoundedRect(-5, -22, 10, 36, 3);
+    body.fillStyle(0xc62828, 1);
+    body.fillTriangle(-5, -22, 5, -22, 0, -34);
+    body.fillStyle(0x37474f, 1);
+    body.fillRect(-7, 10, 4, 10);
+    body.fillRect(3, 10, 4, 10);
+    body.fillStyle(0xff9100, 1);
+    body.fillTriangle(-4, 14, 4, 14, 0, 28);
+    body.fillStyle(0xffe082, 0.9);
+    body.fillTriangle(-2, 14, 2, 14, 0, 22);
+    missile.add(body);
+
+    let trail = null;
+    if (this.textures.exists('ember')) {
+      trail = this.add.particles(0, 0, 'ember', {
+        speed: { min: 20, max: 60 },
+        angle: { min: 70, max: 110 },
+        lifespan: { min: 180, max: 360 },
+        scale: { start: 0.7, end: 0 },
+        alpha: { start: 0.9, end: 0 },
+        frequency: 16,
+        quantity: 2,
+        follow: missile,
+        followOffset: { x: 0, y: 20 },
+        blendMode: 'ADD',
+      });
+      trail.setDepth(57);
+    }
+
+    missile.setData({
+      progress: 0,
+      startX,
+      endX,
+      startY,
+      endY,
+      hitChecked: false,
+      trail,
+      guaranteed: true,
+    });
+    this.missiles.add(missile);
+  }
+
+  updateMissiles(delta) {
+    const MISSILE_MS = 900;
+    this.missiles.getChildren().forEach((missile) => {
+      if (!missile.active) return;
+      let p = missile.getData('progress') + delta / MISSILE_MS;
+      missile.setData('progress', p);
+      const t = Math.min(p, 1);
+      missile.x = Phaser.Math.Linear(missile.getData('startX'), missile.getData('endX'), t);
+      missile.y = Phaser.Math.Linear(missile.getData('startY'), missile.getData('endY'), t);
+      // Slight grow as it approaches
+      missile.setScale(Phaser.Math.Linear(0.85, 1.25, t));
+
+      if (p >= 1 && !missile.getData('hitChecked')) {
+        missile.setData('hitChecked', true);
+        this.onMissileHitPlayer(missile);
+      }
+    });
+  }
+
+  onMissileHitPlayer(missile) {
+    const trail = missile.getData('trail');
+    if (trail?.active) {
+      trail.stop();
+      this.time.delayedCall(300, () => trail.destroy());
+    }
+    if (missile.active) missile.destroy();
+    if (this.gameOver) return;
+    // Гарантированное попадание — жизнь снимается всегда
+    this.loseLife();
+    this.cameras.main.shake(160, 0.012);
+    this.cameras.main.flash(140, 220, 40, 20);
+    if (this.lives <= 0) this.endGame(`КОРАБЛЬ УНИЧТОЖЕН\nОчки: ${this.score}`);
   }
 
   update(_t, delta) {
@@ -374,31 +825,171 @@ export class GameScene extends Phaser.Scene {
       const foam = ship.getData('foam');
       if (foam?.active) foam.x = ship.x;
 
+      // Оружие: только после времени в видимой зоне
+      const weapon = ship.getData('weapon');
+      if (weapon && !ship.getData('hasFired')) {
+        const onScreen = ship.x >= 70 && ship.x <= W - 70;
+        if (onScreen) {
+          const visibleMs = ship.getData('visibleMs') + delta;
+          ship.setData('visibleMs', visibleMs);
+          if (visibleMs >= ship.getData('fireAfterMs')) {
+            ship.setData('hasFired', true);
+            if (weapon === 'missile') this.fireCargoMissile(ship);
+            else this.fireEnemyTorpedo(ship);
+          }
+        } else {
+          ship.setData('visibleMs', 0);
+        }
+      }
+
       if (ship.x < -140 || ship.x > W + 140) {
-        foam?.destroy();
-        ship.destroy();
+        this.destroyShip(ship);
       }
     });
 
+    this.updateLifeCrate(delta);
+    this.updatePlayerTorpedoes(delta);
+    this.updateEnemyTorpedoes(delta);
+    this.updateMissiles(delta);
+    this.checkTorpedoCollisions();
+  }
+
+  updateLifeCrate(delta) {
+    const crate = this.lifeCrate;
+    if (!crate?.active || !crate.getData('alive')) return;
+
+    if (!crate.getData('landed')) {
+      const swayT = crate.getData('swayT') + delta * 0.0032;
+      crate.setData('swayT', swayT);
+      crate.x = crate.getData('baseX') + Math.sin(swayT) * 18;
+      crate.angle = Math.sin(swayT) * 6;
+      return;
+    }
+
+    crate.angle = 0;
+    let left = crate.getData('landLeft') - delta;
+    crate.setData('landLeft', left);
+    // мигание в последнюю секунду
+    if (left < 1000) {
+      crate.alpha = 0.45 + 0.55 * Math.abs(Math.sin(left * 0.02));
+    }
+    if (left <= 0) {
+      // если торпеда уже летит в ящик — ждём попадания
+      const pending = this.torpedoes.getChildren().some(
+        (t) =>
+          t.active &&
+          !t.getData('hitChecked') &&
+          Math.abs(t.getData('aimX') - crate.x) <= (crate.getData('hitHalf') || 28),
+      );
+      if (!pending) this.destroyLifeCrate(true);
+    }
+  }
+
+  updatePlayerTorpedoes(delta) {
     this.torpedoes.getChildren().forEach((torpedo) => {
+      if (!torpedo.active) return;
       let p = torpedo.getData('progress') + delta / TORPEDO_MS;
       torpedo.setData('progress', p);
       const startY = torpedo.getData('startY');
+      const startScale = torpedo.getData('startScale') || 0.12;
       torpedo.x = torpedo.getData('aimX');
-      torpedo.y = Phaser.Math.Linear(startY, WATERLINE, Math.min(p, 1));
-      torpedo.setScale(Phaser.Math.Linear(1, 0.4, Math.min(p, 1)));
-      torpedo.alpha = p > 0.9 ? 1 - (p - 0.9) / 0.1 : 1;
+      torpedo.y = Phaser.Math.Linear(startY, WATERLINE + 6, Math.min(p, 1));
+      torpedo.setScale(Phaser.Math.Linear(startScale, startScale * 0.32, Math.min(p, 1)));
+      torpedo.alpha = p > 0.88 ? 1 - (p - 0.88) / 0.12 : 1;
 
       if (p >= 0.9 && !torpedo.getData('hitChecked')) {
         torpedo.setData('hitChecked', true);
+        this.stopTorpedoTrail(torpedo);
         this.resolveImpact(torpedo);
       }
-      if (p >= 1) torpedo.destroy();
+      if (p >= 1) this.killTorpedo(torpedo);
     });
+  }
+
+  updateEnemyTorpedoes(delta) {
+    this.enemyTorpedoes.getChildren().forEach((torpedo) => {
+      if (!torpedo.active) return;
+      let p = torpedo.getData('progress') + delta / ENEMY_TORPEDO_MS;
+      torpedo.setData('progress', p);
+      const startY = torpedo.getData('startY');
+      const endY = torpedo.getData('endY');
+      const startX = torpedo.getData('startX');
+      const endX = torpedo.getData('endX') ?? startX;
+      const startScale = torpedo.getData('startScale') || 0.1;
+      const t = Math.min(p, 1);
+      torpedo.x = Phaser.Math.Linear(startX, endX, t);
+      torpedo.y = Phaser.Math.Linear(startY, endY, t);
+      // Growing slightly as it approaches the player
+      torpedo.setScale(Phaser.Math.Linear(startScale * 0.7, startScale * 1.15, t));
+      torpedo.alpha = 1;
+
+      if (p >= 1 && !torpedo.getData('hitChecked')) {
+        torpedo.setData('hitChecked', true);
+        this.onEnemyTorpedoHitPlayer(torpedo);
+      }
+    });
+  }
+
+  checkTorpedoCollisions() {
+    const players = this.torpedoes.getChildren();
+    const enemies = this.enemyTorpedoes.getChildren();
+    for (const mine of players) {
+      if (!mine.active || mine.getData('hitChecked')) continue;
+      for (const enemy of enemies) {
+        if (!enemy.active || enemy.getData('hitChecked')) continue;
+        const dx = mine.x - enemy.x;
+        const dy = mine.y - enemy.y;
+        if (dx * dx + dy * dy <= TORPEDO_HIT_RADIUS * TORPEDO_HIT_RADIUS) {
+          mine.setData('hitChecked', true);
+          enemy.setData('hitChecked', true);
+          const x = (mine.x + enemy.x) / 2;
+          const y = (mine.y + enemy.y) / 2;
+          this.spawnHit(x, y);
+          this.addScore(INTERCEPT_SCORE, x, y - 20);
+          this.killTorpedo(mine);
+          this.killTorpedo(enemy);
+          break;
+        }
+      }
+    }
+  }
+
+  stopTorpedoTrail(torpedo) {
+    const trail = torpedo.getData('trail');
+    if (trail?.active) {
+      trail.stop();
+      this.time.delayedCall(400, () => trail.destroy());
+    }
+  }
+
+  killTorpedo(torpedo) {
+    if (!torpedo?.active) return;
+    this.stopTorpedoTrail(torpedo);
+    torpedo.destroy();
+  }
+
+  onEnemyTorpedoHitPlayer(torpedo) {
+    this.killTorpedo(torpedo);
+    if (this.gameOver) return;
+    this.loseLife();
+    this.cameras.main.flash(120, 180, 30, 30);
+    if (this.lives <= 0) this.endGame(`КОРАБЛЬ УНИЧТОЖЕН\nОчки: ${this.score}`);
   }
 
   resolveImpact(torpedo) {
     const aimX = torpedo.getData('aimX');
+
+    const crate = this.lifeCrate;
+    if (
+      crate?.active &&
+      crate.getData('alive') &&
+      crate.getData('landed') &&
+      Math.abs(crate.x - aimX) <= (crate.getData('hitHalf') || 28)
+    ) {
+      this.collectLifeCrate();
+      return;
+    }
+
     let best = null;
     let bestDist = Infinity;
 
@@ -413,19 +1004,22 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (best) {
-      best.setData('alive', false);
-      best.getData('foam')?.destroy();
+      const pts = this.pointsForShip(best);
       this.spawnHit(best.x, WATERLINE - best.displayHeight * 0.3);
+      this.addScore(pts, best.x, WATERLINE - best.displayHeight * 0.5);
+      const dying = best;
+      dying.setData('alive', false);
+      dying.setData('hasFired', true);
+      dying.getData('foam')?.destroy();
       this.tweens.add({
-        targets: best,
+        targets: dying,
         alpha: 0,
-        y: best.y + 20,
+        y: dying.y + 20,
         duration: 480,
-        onComplete: () => best.destroy(),
+        onComplete: () => {
+          if (dying.active) dying.destroy();
+        },
       });
-      this.score = Math.min(MAX_SHOTS, this.score + 1);
-      this.refreshHud();
-      if (this.score >= MAX_SHOTS) this.endGame();
     } else {
       const ripple = this.add.ellipse(aimX, WATERLINE, 6, 3, 0xffffff, 0.5);
       ripple.setDepth(40);

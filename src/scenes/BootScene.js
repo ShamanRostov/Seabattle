@@ -123,6 +123,68 @@ function makeParticleDot(scene, key, color, size = 8) {
   g.destroy();
 }
 
+function prepareMagentaSprite(scene, key) {
+  return new Promise((resolve) => {
+    const tex = scene.textures.get(key);
+    const src = tex.getSourceImage();
+    const w = src.width;
+    const h = src.height;
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(src, 0, 0);
+    const img = ctx.getImageData(0, 0, w, h);
+    const d = img.data;
+
+    let minX = w;
+    let minY = h;
+    let maxX = 0;
+    let maxY = 0;
+
+    for (let y = 0; y < h; y += 1) {
+      for (let x = 0; x < w; x += 1) {
+        const i = (y * w + x) * 4;
+        const r = d[i];
+        const g = d[i + 1];
+        const b = d[i + 2];
+        const magenta = r > 190 && b > 160 && g < 100 && r - g > 90 && b - g > 70;
+        if (magenta) {
+          d[i + 3] = 0;
+        } else {
+          d[i + 3] = 255;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+
+    const pad = 4;
+    minX = Math.max(0, minX - pad);
+    minY = Math.max(0, minY - pad);
+    maxX = Math.min(w - 1, maxX + pad);
+    maxY = Math.min(h - 1, maxY + pad);
+
+    const cw = Math.max(1, maxX - minX + 1);
+    const ch = Math.max(1, maxY - minY + 1);
+    const out = document.createElement('canvas');
+    out.width = cw;
+    out.height = ch;
+    out.getContext('2d').drawImage(canvas, minX, minY, cw, ch, 0, 0, cw, ch);
+
+    const image = new Image();
+    image.onload = () => {
+      if (scene.textures.exists(key)) scene.textures.remove(key);
+      scene.textures.addImage(key, image);
+      resolve();
+    };
+    image.src = out.toDataURL('image/png');
+  });
+}
+
 export class BootScene extends Phaser.Scene {
   constructor() {
     super('Boot');
@@ -132,19 +194,25 @@ export class BootScene extends Phaser.Scene {
     this.load.image('sea', 'assets/sea.png');
     this.load.image('ship-cargo', 'assets/ship-cargo.png');
     this.load.image('ship-war', 'assets/ship-war.png');
+    this.load.image('ship-sub', 'assets/ship-sub.png');
     this.load.image('explosion', 'assets/explosion.png');
+    this.load.image('torpedo', 'assets/torpedo.png');
   }
 
   create() {
     prepareSprite(this, 'ship-cargo', { stripWaterBottom: 0.14 });
     prepareSprite(this, 'ship-war', { stripWaterBottom: 0.22 });
+    prepareSprite(this, 'ship-sub', { stripWaterBottom: 0.18 });
     keyBlackToAlpha(this, 'explosion', 32);
 
     makeParticleDot(this, 'spark', 0xffdd66, 5);
     makeParticleDot(this, 'smoke', 0x555555, 10);
     makeParticleDot(this, 'ember', 0xff5522, 4);
     makeParticleDot(this, 'splash', 0xaadfff, 6);
+    makeParticleDot(this, 'bubble', 0xc8eeff, 4);
 
-    this.scene.start('Game');
+    prepareMagentaSprite(this, 'torpedo').then(() => {
+      this.scene.start('Game');
+    });
   }
 }
