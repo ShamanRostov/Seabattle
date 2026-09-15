@@ -1,11 +1,14 @@
 import Phaser from 'phaser';
 import { createGyroAim } from '../input/gyro.js';
 
-const VIEW_HALF = 260;
-const TORPEDO_COOLDOWN_MS = 850;
-const MAX_SHOTS = 10;
 const W = 960;
 const H = 540;
+const MAX_SHOTS = 10;
+const TORPEDO_MS = 1000;
+const WATERLINE = 175;
+const SEA_HORIZON_T = 0.62;
+const AIM_MIN = 80;
+const AIM_MAX = W - 80;
 
 export class GameScene extends Phaser.Scene {
   constructor() {
@@ -13,219 +16,175 @@ export class GameScene extends Phaser.Scene {
   }
 
   create() {
-    this.viewAngle = 0;
+    this.aimX = W / 2;
     this.shotsLeft = MAX_SHOTS;
     this.score = 0;
     this.canFire = true;
     this.gameOver = false;
     this.holdLeft = false;
     this.holdRight = false;
+    this.pointerOverUi = false;
     this.gyro = createGyroAim({ axis: 'gamma' });
+    this._onMouseMove = null;
 
-    this.world = this.add.container(W / 2, H / 2);
-    this.drawSeaBackdrop();
+    this.world = this.add.container(0, 0);
+    this.drawSea();
     this.ships = this.add.group();
     this.torpedoes = this.add.group();
 
-    this.spawnShip(-320, 1);
-    this.spawnShip(380, -1);
-    this.spawnShip(80, 1);
+    this.spawnShip(220, 1);
+    this.spawnShip(520, -1);
+    this.spawnShip(780, 1);
 
-    this.drawPeriscopeFrame();
+    this.drawFrame();
+    this.drawReticle();
     this.drawHud();
     this.bindInput();
 
-    this.spawnTimer = this.time.addEvent({
-      delay: 2600,
+    this.time.addEvent({
+      delay: 3000,
       loop: true,
       callback: () => {
         if (this.gameOver) return;
+        if (this.ships.countActive(true) >= 5) return;
         const dir = Math.random() < 0.5 ? 1 : -1;
-        const startX = dir > 0 ? -450 : 450;
-        this.spawnShip(startX + dir * -Phaser.Math.Between(0, 40), dir);
+        this.spawnShip(dir > 0 ? -80 : W + 80, dir);
       },
+    });
+
+    this.time.delayedCall(4500, () => {
+      if (this.hint?.active) this.tweens.add({ targets: this.hint, alpha: 0, duration: 500 });
     });
   }
 
-  drawSeaBackdrop() {
-    const g = this.add.graphics();
-    g.fillStyle(0x8fd0d0, 1);
-    g.fillRect(-2200, -H / 2, 4400, H / 2);
-    g.fillStyle(0x1a5555, 1);
-    g.fillRect(-2200, 0, 4400, H / 2);
-
-    // vertical diorama seams
-    g.lineStyle(2, 0x000000, 0.12);
-    g.lineBetween(-180, -H / 2, -180, H / 2);
-    g.lineBetween(180, -H / 2, 180, H / 2);
-
-    for (let i = 0; i < 20; i += 1) {
-      const y = 16 + i * 11;
-      g.lineStyle(1, 0xe8ffff, Math.max(0.05, 0.4 - i * 0.018));
-      g.lineBetween(-2200, y, 2200, y);
-    }
-
-    this.drawCloud(g, -520, -150);
-    this.drawCloud(g, 380, -140);
-    this.drawCloud(g, -80, -170);
-
-    g.fillStyle(0x4a3528, 1);
-    g.fillTriangle(-980, 4, -780, -150, -560, 4);
-    g.fillTriangle(560, 4, 760, -130, 980, 4);
-    g.fillStyle(0xf4f4f4, 1);
-    g.fillTriangle(-880, -90, -780, -150, -700, -70);
-    g.fillTriangle(680, -80, 760, -130, 840, -65);
-
-    this.world.add(g);
-  }
-
-  drawCloud(g, x, y) {
-    g.fillStyle(0xffffff, 0.95);
-    g.fillEllipse(x, y, 100, 30);
-    g.fillEllipse(x + 40, y - 8, 70, 24);
-    g.fillEllipse(x - 35, y - 4, 60, 20);
+  drawSea() {
+    const bg = this.add.image(W / 2, H / 2 + (WATERLINE - H * SEA_HORIZON_T), 'sea');
+    bg.setDisplaySize(W * 1.15, H * 1.2);
+    this.world.add(bg);
   }
 
   spawnShip(x, dir) {
-    const depth = Phaser.Math.Between(0, 2);
-    const y = 24 + depth * 20;
-    const scale = 1 - depth * 0.2;
-    const speed = (38 + Math.random() * 40) * (1 - depth * 0.12);
-    const kind = Phaser.Math.Between(0, 1);
+    const lane = Phaser.Math.Between(0, 2);
+    const y = WATERLINE + 4 + lane * 5;
+    const key = Math.random() < 0.55 ? 'ship-cargo' : 'ship-war';
 
-    const ship = this.add.container(x, y);
-    const hull = this.add.graphics();
-    if (kind === 0) {
-      hull.fillStyle(0xc62828, 1);
-      hull.fillRoundedRect(-40, -8, 80, 16, 5);
-      hull.fillStyle(0x7f1d1d, 1);
-      hull.fillRect(-6, -24, 12, 18);
-      hull.fillStyle(0xfafafa, 1);
-      hull.fillTriangle(-2, -24, 22, -18, -2, -12);
-    } else {
-      hull.fillStyle(0xb71c1c, 1);
-      hull.fillRoundedRect(-28, -6, 56, 12, 4);
-      hull.fillStyle(0x5d1010, 1);
-      hull.fillRect(-10, -16, 8, 12);
-      hull.fillRect(4, -14, 6, 10);
-    }
+    const foam = this.add.ellipse(x, WATERLINE + 2 + lane * 5, 100 - lane * 14, 11, 0xffffff, 0.25);
+    this.world.add(foam);
 
-    ship.add(hull);
-    ship.setScale(scale);
-    ship.setData({ dir, speed, alive: true, depth });
+    const ship = this.add.image(x, y, key);
+    ship.setOrigin(0.5, 0.98);
+    const targetW = 160 - lane * 24;
+    ship.setScale(targetW / Math.max(1, ship.width));
+    // Art facing: cargo → right, war → left. Flip so bow matches movement.
+    if (key === 'ship-war') ship.setFlipX(dir > 0);
+    else ship.setFlipX(dir < 0);
+    ship.setDepth(10 + lane);
+    foam.setDepth(9 + lane);
+
+    ship.setData({
+      dir,
+      speed: 28 + Math.random() * 22,
+      alive: true,
+      lane,
+      hitHalf: ship.displayWidth * 0.36,
+      foam,
+    });
     this.world.add(ship);
     this.ships.add(ship);
   }
 
-  drawPeriscopeFrame() {
+  drawFrame() {
     const hole = this.make.graphics({ x: 0, y: 0 }, false);
     hole.fillStyle(0xffffff);
-    hole.fillRoundedRect(48, 36, W - 96, H - 72, 56);
+    hole.fillRoundedRect(28, 22, W - 56, H - 44, 22);
     this.world.setMask(hole.createGeometryMask());
 
     const rt = this.add.renderTexture(0, 0, W, H).setOrigin(0);
     const cover = this.make.graphics({ x: 0, y: 0 }, false);
-    cover.fillStyle(0x000000, 1);
+    cover.fillStyle(0x05080c, 1);
     cover.fillRect(0, 0, W, H);
     rt.draw(cover);
     const cut = this.make.graphics({ x: 0, y: 0 }, false);
-    cut.fillStyle(0xffffff, 1);
-    cut.fillRoundedRect(48, 36, W - 96, H - 72, 56);
+    cut.fillStyle(0xffffff);
+    cut.fillRoundedRect(28, 22, W - 56, H - 44, 22);
     rt.erase(cut);
+  }
 
-    const reticle = this.add.graphics();
-    reticle.lineStyle(2, 0xff2a2a, 0.95);
-    reticle.lineBetween(W / 2 - 78, 365, W / 2 + 78, 365);
-    for (let i = -7; i <= 7; i += 1) {
-      const h = i === 0 ? 16 : 7;
-      reticle.lineBetween(W / 2 + i * 9, 365 - h / 2, W / 2 + i * 9, 365 + h / 2);
+  drawReticle() {
+    this.reticle = this.add.container(this.aimX, WATERLINE);
+    const g = this.add.graphics();
+    g.lineStyle(2, 0xff3344, 0.95);
+    g.lineBetween(-55, 0, 55, 0);
+    g.lineBetween(0, -12, 0, 12);
+    for (let i = -5; i <= 5; i += 1) {
+      if (i === 0) continue;
+      g.lineBetween(i * 9, -5, i * 9, 5);
     }
+    this.reticle.add(g);
+    this.reticle.setDepth(100);
   }
 
   drawHud() {
-    const glow = {
-      fontFamily: 'Courier New, monospace',
-      color: '#ff3b3b',
-      stroke: '#660000',
-      strokeThickness: 2,
-    };
+    const style = { fontFamily: 'Segoe UI, system-ui, sans-serif', color: '#ff5a5a' };
 
-    this.add.text(64, 44, 'ПУСК', { ...glow, fontSize: '24px', fontStyle: 'bold' });
+    this.add.text(56, 40, 'ТОРПЕДЫ', { ...style, fontSize: '16px', fontStyle: '600' });
     this.shotTexts = [];
     for (let i = 1; i <= MAX_SHOTS; i += 1) {
       this.shotTexts.push(
-        this.add.text(148 + (i - 1) * 30, 48, String(i), { ...glow, fontSize: '20px' }).setOrigin(0.5),
+        this.add.text(150 + (i - 1) * 28, 40, String(i), { ...style, fontSize: '18px' }).setOrigin(0.5, 0),
       );
     }
 
-    this.add
-      .text(W / 2, 448, 'ТОРПЕДИРОВАНО', { ...glow, fontSize: '18px', fontStyle: 'bold' })
-      .setOrigin(0.5);
-
+    this.add.text(W / 2, 460, 'ПОПАДАНИЯ', { ...style, fontSize: '15px', fontStyle: '600' }).setOrigin(0.5);
     this.scoreTexts = [];
     for (let i = 1; i <= MAX_SHOTS; i += 1) {
       this.scoreTexts.push(
-        this.add.text(292 + (i - 1) * 38, 482, String(i), { ...glow, fontSize: '20px' }).setOrigin(0.5),
+        this.add.text(300 + (i - 1) * 36, 486, String(i), { ...style, fontSize: '18px' }).setOrigin(0.5),
       );
     }
 
-    this.hintText = this.add
-      .text(W / 2, 400, '← →  цель   ПРОБЕЛ / ПУСК  огонь   R  заново', {
-        fontFamily: 'Courier New, monospace',
-        fontSize: '13px',
-        color: '#ffb0b0',
-      })
-      .setOrigin(0.5)
-      .setAlpha(0.75);
-
-    this.gyroText = this.add
-      .text(W / 2, 418, '', {
-        fontFamily: 'Courier New, monospace',
-        fontSize: '12px',
-        color: '#ff8888',
+    this.hint = this.add
+      .text(W / 2, 400, 'Мышь двигает прицел   ЛКМ / пробел — огонь   R — заново', {
+        fontFamily: 'Segoe UI, system-ui, sans-serif',
+        fontSize: '14px',
+        color: '#fff',
+        backgroundColor: '#00000099',
+        padding: { x: 10, y: 6 },
       })
       .setOrigin(0.5);
 
     this.gameOverText = this.add
-      .text(W / 2, 190, 'ИГРА ОКОНЧЕНА', {
-        fontFamily: 'Courier New, monospace',
-        fontSize: '40px',
-        color: '#ffe0e0',
-        fontStyle: 'bold',
-        stroke: '#440000',
-        strokeThickness: 4,
+      .text(W / 2, 200, 'ИГРА ОКОНЧЕНА', {
+        fontFamily: 'Segoe UI, system-ui, sans-serif',
+        fontSize: '42px',
+        color: '#fff',
+        fontStyle: '700',
+        stroke: '#000',
+        strokeThickness: 6,
       })
       .setOrigin(0.5)
       .setVisible(false);
 
     this.restartText = this.add
-      .text(W / 2, 240, 'Нажми R или ПУСК', {
-        fontFamily: 'Courier New, monospace',
+      .text(W / 2, 250, 'R или клик — ещё раз', {
+        fontFamily: 'Segoe UI, system-ui, sans-serif',
         fontSize: '16px',
-        color: '#ffaaaa',
+        color: '#ffcccc',
       })
       .setOrigin(0.5)
       .setVisible(false);
 
-    this.makeButton(70, 300, '◀', () => {
+    this.makeButton(64, 300, '◀', () => {
       this.holdLeft = true;
     });
-    this.makeButton(890, 300, '▶', () => {
+    this.makeButton(896, 300, '▶', () => {
       this.holdRight = true;
     });
-    this.makeButton(W / 2, 300, 'ПУСК', () => {
-      if (this.gameOver) this.restart();
-      else this.tryFire();
-    }, 130);
-
-    this.makeButton(880, 56, 'ГИРО', async () => {
+    this.makeButton(880, 48, 'ГИРО', async () => {
       const ok = await this.gyro.enable();
-      this.gyroText.setText(
-        ok
-          ? 'Гироскоп: вкл (наклон). G — смена оси'
-          : 'Гироскоп недоступен — кнопки ◀ ▶',
-      );
-    }, 88);
+      this.hint.setAlpha(1);
+      this.hint.setText(ok ? 'Гироскоп вкл' : 'Гироскоп недоступен');
+    }, 90);
 
     this.input.on('pointerup', () => {
       this.holdLeft = false;
@@ -235,158 +194,327 @@ export class GameScene extends Phaser.Scene {
     this.refreshHud();
   }
 
-  makeButton(x, y, label, onDown, width = 72) {
-    const container = this.add.container(x, y);
-    const bg = this.add.rectangle(0, 0, width, 52, 0x2a0000, 0.55).setStrokeStyle(2, 0xff4444);
-    const text = this.add
+  makeButton(x, y, label, onDown, width = 64) {
+    const c = this.add.container(x, y);
+    const bg = this.add.rectangle(0, 0, width, 48, 0x111827, 0.7).setStrokeStyle(2, 0xff5555);
+    const t = this.add
       .text(0, 0, label, {
-        fontFamily: 'Courier New, monospace',
+        fontFamily: 'Segoe UI, system-ui, sans-serif',
         fontSize: '18px',
-        color: '#ff6666',
+        color: '#ff7777',
       })
       .setOrigin(0.5);
-    container.add([bg, text]);
-    container.setSize(width, 52);
-    container.setInteractive(
-      new Phaser.Geom.Rectangle(-width / 2, -26, width, 52),
-      Phaser.Geom.Rectangle.Contains,
-    );
-    container.on('pointerdown', onDown);
-    return container;
+    c.add([bg, t]);
+    c.setSize(width, 48);
+    c.setInteractive(new Phaser.Geom.Rectangle(-width / 2, -24, width, 48), Phaser.Geom.Rectangle.Contains);
+    c.on('pointerover', () => {
+      this.pointerOverUi = true;
+    });
+    c.on('pointerout', () => {
+      this.pointerOverUi = false;
+    });
+    c.on('pointerdown', () => onDown());
+    return c;
+  }
+
+  setAimX(x) {
+    this.aimX = Phaser.Math.Clamp(x, AIM_MIN, AIM_MAX);
+    if (this.reticle) this.reticle.x = this.aimX;
   }
 
   bindInput() {
     this.cursors = this.input.keyboard.createCursorKeys();
-    this.keys = this.input.keyboard.addKeys('A,D,SPACE,R,G');
-    this.keys.SPACE.on('down', () => {
-      if (this.gameOver) this.restart();
-      else this.tryFire();
-    });
+    this.keys = this.input.keyboard.addKeys('A,D,SPACE,R');
+    this.keys.SPACE.on('down', () => (this.gameOver ? this.restart() : this.tryFire()));
     this.keys.R.on('down', () => this.restart());
-    this.keys.G.on('down', () => {
-      const next = this.gyro.state.axis === 'gamma' ? 'beta' : 'gamma';
-      this.gyro.setAxis(next);
-      this.gyroText.setText(`Ось гироскопа: ${next === 'gamma' ? 'влево/вправо' : 'вперёд/назад'}`);
+
+    const canvas = this.game.canvas;
+    canvas.style.cursor = 'crosshair';
+
+    this._onMouseMove = (e) => {
+      if (this.gameOver || this.pointerOverUi) return;
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      const x = ((e.clientX - rect.left) / rect.width) * W;
+      this.setAimX(x);
+    };
+    canvas.addEventListener('mousemove', this._onMouseMove);
+
+    this.input.on('pointermove', (pointer) => {
+      if (this.gameOver || this.pointerOverUi) return;
+      this.setAimX(pointer.x);
     });
+
+    this.input.on('pointerdown', (pointer) => {
+      if (this.pointerOverUi) return;
+      if (this.gameOver) {
+        this.restart();
+        return;
+      }
+      this.setAimX(pointer.x);
+      if (pointer.leftButtonDown()) this.tryFire();
+    });
+
+    this.events.once('shutdown', () => this.teardownInput());
+  }
+
+  teardownInput() {
+    const canvas = this.game?.canvas;
+    if (canvas && this._onMouseMove) {
+      canvas.removeEventListener('mousemove', this._onMouseMove);
+      canvas.style.cursor = 'default';
+    }
+    this.gyro.disable();
   }
 
   restart() {
-    this.gyro.disable();
+    this.teardownInput();
     this.scene.restart();
   }
 
   tryFire() {
     if (this.gameOver || !this.canFire || this.shotsLeft <= 0) return;
-
     this.shotsLeft -= 1;
     this.canFire = false;
     this.refreshHud();
 
-    const aimX = this.viewAngle;
-    const torpedo = this.add.rectangle(aimX, 155, 5, 20, 0xfff3a0);
-    torpedo.setStrokeStyle(1, 0xffaa00);
-    torpedo.setData({ progress: 0, aimX, spent: false });
-    this.world.add(torpedo);
+    const aimX = this.aimX;
+    const startY = H - 70;
+    const torpedo = this.add.ellipse(aimX, startY, 9, 26, 0xffe08a);
+    torpedo.setStrokeStyle(1, 0xff9f1a);
+    torpedo.setData({ progress: 0, aimX, startY, hitChecked: false });
+    torpedo.setDepth(50);
     this.torpedoes.add(torpedo);
 
-    this.time.delayedCall(TORPEDO_COOLDOWN_MS, () => {
+    this.time.delayedCall(450, () => {
       this.canFire = true;
       if (this.shotsLeft <= 0 && !this.gameOver) this.endGame();
     });
   }
 
-  highlightRow(texts, activeNumber) {
+  highlight(texts, n) {
     texts.forEach((t, i) => {
-      const n = i + 1;
-      const on = activeNumber > 0 && n === activeNumber;
-      t.setColor(on ? '#ffffff' : '#ff3b3b');
-      t.setBackgroundColor(on ? '#aa0000' : null);
-      t.setScale(on ? 1.15 : 1);
+      const on = n > 0 && i + 1 === n;
+      t.setColor(on ? '#ffffff' : '#ff5a5a');
+      t.setBackgroundColor(on ? '#b91c1c' : null);
     });
   }
 
   refreshHud() {
-    this.highlightRow(this.shotTexts, this.shotsLeft);
-    this.highlightRow(this.scoreTexts, this.score);
+    this.highlight(this.shotTexts, this.shotsLeft);
+    this.highlight(this.scoreTexts, this.score);
   }
 
   endGame() {
     this.gameOver = true;
     this.gameOverText.setVisible(true);
     this.restartText.setVisible(true);
+    if (this.game.canvas) this.game.canvas.style.cursor = 'default';
   }
 
-  update(_time, delta) {
-    let turn = 0;
+  update(_t, delta) {
     if (!this.gameOver) {
+      let turn = 0;
       if (this.cursors.left.isDown || this.keys.A.isDown || this.holdLeft) turn -= 1;
       if (this.cursors.right.isDown || this.keys.D.isDown || this.holdRight) turn += 1;
       turn += this.gyro.sample();
+      if (turn) this.setAimX(this.aimX + turn * 280 * (delta / 1000));
     }
-
-    const turnSpeed = 60;
-    this.viewAngle = Phaser.Math.Clamp(
-      this.viewAngle + turn * turnSpeed * (delta / 1000),
-      -VIEW_HALF,
-      VIEW_HALF,
-    );
-    this.world.x = W / 2 - this.viewAngle;
 
     if (this.gameOver) return;
 
     this.ships.getChildren().forEach((ship) => {
       if (!ship.getData('alive')) return;
       ship.x += ship.getData('dir') * ship.getData('speed') * (delta / 1000);
-      if (ship.x < -520 || ship.x > 520) ship.destroy();
+      const foam = ship.getData('foam');
+      if (foam?.active) foam.x = ship.x;
+      if (ship.x < -120 || ship.x > W + 120) {
+        foam?.destroy();
+        ship.destroy();
+      }
     });
 
     this.torpedoes.getChildren().forEach((torpedo) => {
-      let p = torpedo.getData('progress') + delta / 1350;
+      let p = torpedo.getData('progress') + delta / TORPEDO_MS;
       torpedo.setData('progress', p);
-      torpedo.y = Phaser.Math.Linear(155, 8, Math.min(p, 1));
-      torpedo.setScale(Phaser.Math.Linear(1, 0.3, Math.min(p, 1)));
-      torpedo.alpha = p > 0.88 ? 1 - (p - 0.88) / 0.12 : 1;
+      const startY = torpedo.getData('startY');
+      torpedo.x = torpedo.getData('aimX');
+      torpedo.y = Phaser.Math.Linear(startY, WATERLINE, Math.min(p, 1));
+      torpedo.setScale(Phaser.Math.Linear(1, 0.4, Math.min(p, 1)));
+      torpedo.alpha = p > 0.9 ? 1 - (p - 0.9) / 0.1 : 1;
 
-      if (p >= 0.9 && p < 1.08) this.checkTorpedoHit(torpedo);
-      if (p >= 1.08) torpedo.destroy();
+      if (p >= 0.9 && !torpedo.getData('hitChecked')) {
+        torpedo.setData('hitChecked', true);
+        this.resolveImpact(torpedo);
+      }
+      if (p >= 1) torpedo.destroy();
     });
   }
 
-  checkTorpedoHit(torpedo) {
-    if (torpedo.getData('spent')) return;
+  resolveImpact(torpedo) {
     const aimX = torpedo.getData('aimX');
-    const hitRange = 30;
+    let best = null;
+    let bestDist = Infinity;
 
     for (const ship of this.ships.getChildren()) {
       if (!ship.active || !ship.getData('alive')) continue;
-      if (Math.abs(ship.x - aimX) <= hitRange / ship.scaleX) {
-        ship.setData('alive', false);
-        torpedo.setData('spent', true);
-        this.spawnSplash(ship.x, ship.y);
-        this.tweens.add({
-          targets: ship,
-          alpha: 0,
-          y: ship.y + 24,
-          duration: 450,
-          onComplete: () => ship.destroy(),
-        });
-        this.score = Math.min(MAX_SHOTS, this.score + 1);
-        this.refreshHud();
-        if (this.score >= MAX_SHOTS) this.endGame();
-        break;
+      const dist = Math.abs(ship.x - aimX);
+      const half = ship.getData('hitHalf') || ship.displayWidth * 0.35;
+      if (dist <= half && dist < bestDist) {
+        best = ship;
+        bestDist = dist;
       }
+    }
+
+    if (best) {
+      best.setData('alive', false);
+      best.getData('foam')?.destroy();
+      this.spawnHit(best.x, WATERLINE - best.displayHeight * 0.3);
+      this.tweens.add({
+        targets: best,
+        alpha: 0,
+        y: best.y + 20,
+        duration: 480,
+        onComplete: () => best.destroy(),
+      });
+      this.score = Math.min(MAX_SHOTS, this.score + 1);
+      this.refreshHud();
+      if (this.score >= MAX_SHOTS) this.endGame();
+    } else {
+      const ripple = this.add.ellipse(aimX, WATERLINE, 6, 3, 0xffffff, 0.5);
+      ripple.setDepth(40);
+      this.tweens.add({
+        targets: ripple,
+        scaleX: 5,
+        scaleY: 2.5,
+        alpha: 0,
+        duration: 300,
+        onComplete: () => ripple.destroy(),
+      });
     }
   }
 
-  spawnSplash(x, y) {
-    const splash = this.add.circle(x, y, 6, 0xffee88, 0.9);
-    this.world.add(splash);
+  spawnHit(x, y) {
+    const depth = 70;
+
+    // 1) White flash
+    const flash = this.add.circle(x, y, 14, 0xffffff, 0.95).setDepth(depth + 3);
     this.tweens.add({
-      targets: splash,
-      scale: 4,
+      targets: flash,
+      scale: 6,
       alpha: 0,
-      duration: 350,
-      onComplete: () => splash.destroy(),
+      duration: 140,
+      ease: 'Quad.easeOut',
+      onComplete: () => flash.destroy(),
+    });
+
+    // 2) Main fireball sprite
+    if (this.textures.exists('explosion')) {
+      const boom = this.add
+        .image(x, y - 10, 'explosion')
+        .setDepth(depth + 2)
+        .setScale(0.12)
+        .setAlpha(0.95)
+        .setBlendMode(Phaser.BlendModes.ADD);
+      this.tweens.add({
+        targets: boom,
+        scale: 0.72,
+        alpha: 0,
+        angle: Phaser.Math.Between(-15, 15),
+        y: y - 28,
+        duration: 620,
+        ease: 'Cubic.easeOut',
+        onComplete: () => boom.destroy(),
+      });
+    }
+
+    // 3) Secondary fire core
+    const core = this.add.circle(x, y, 10, 0xffaa33, 0.9).setDepth(depth + 1);
+    this.tweens.add({
+      targets: core,
+      scale: 4.5,
+      alpha: 0,
+      duration: 380,
+      onComplete: () => core.destroy(),
+    });
+
+    // 4) Sparks / embers
+    if (this.textures.exists('spark')) {
+      const sparks = this.add.particles(x, y, 'spark', {
+        speed: { min: 80, max: 260 },
+        angle: { min: 200, max: 340 },
+        lifespan: { min: 300, max: 700 },
+        quantity: 18,
+        scale: { start: 0.9, end: 0 },
+        alpha: { start: 1, end: 0 },
+        gravityY: 180,
+        blendMode: 'ADD',
+        emitting: false,
+      });
+      sparks.setDepth(depth + 4);
+      sparks.explode(22);
+      this.time.delayedCall(800, () => sparks.destroy());
+    }
+
+    if (this.textures.exists('ember')) {
+      const embers = this.add.particles(x, y - 6, 'ember', {
+        speed: { min: 40, max: 140 },
+        angle: { min: 240, max: 300 },
+        lifespan: 900,
+        quantity: 10,
+        scale: { start: 1.1, end: 0 },
+        alpha: { start: 0.9, end: 0 },
+        gravityY: -40,
+        blendMode: 'ADD',
+        emitting: false,
+      });
+      embers.setDepth(depth + 4);
+      embers.explode(14);
+      this.time.delayedCall(1000, () => embers.destroy());
+    }
+
+    // 5) Smoke
+    if (this.textures.exists('smoke')) {
+      const smoke = this.add.particles(x, y - 8, 'smoke', {
+        speed: { min: 20, max: 70 },
+        angle: { min: 250, max: 290 },
+        lifespan: 1100,
+        quantity: 8,
+        scale: { start: 0.6, end: 2.4 },
+        alpha: { start: 0.55, end: 0 },
+        gravityY: -30,
+        emitting: false,
+      });
+      smoke.setDepth(depth);
+      smoke.explode(10);
+      this.time.delayedCall(1200, () => smoke.destroy());
+    }
+
+    // 6) Water column / splash
+    if (this.textures.exists('splash')) {
+      const splash = this.add.particles(x, WATERLINE, 'splash', {
+        speed: { min: 60, max: 180 },
+        angle: { min: 250, max: 290 },
+        lifespan: 500,
+        quantity: 14,
+        scale: { start: 0.8, end: 0 },
+        alpha: { start: 0.8, end: 0 },
+        gravityY: 320,
+        emitting: false,
+      });
+      splash.setDepth(depth);
+      splash.explode(16);
+      this.time.delayedCall(700, () => splash.destroy());
+    }
+
+    const ring = this.add.ellipse(x, WATERLINE, 20, 8, 0xffffff, 0.45).setDepth(depth - 1);
+    this.tweens.add({
+      targets: ring,
+      scaleX: 7,
+      scaleY: 3,
+      alpha: 0,
+      duration: 500,
+      onComplete: () => ring.destroy(),
     });
   }
 }
