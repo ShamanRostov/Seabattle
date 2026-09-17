@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { createGyroAim } from '../input/gyro.js';
+import { loadPlayer, SIGHTS } from '../data/playerStore.js';
 
 const W = 960;
 const H = 540;
@@ -14,15 +15,26 @@ const PLAYER_EDGE_Y = H - 48;
 const TORPEDO_HIT_RADIUS = 28;
 const CRATE_LAND_MS = 2000; // окно на торпеду после приводнения
 const CRATE_FALL_MS = 3800;
+/** Шанс, что акула проглотит ящик при приводнении */
+const SHARK_EAT_CHANCE = 0.34;
+
+/**
+ * Лёгкое волнение воды.
+ * Откат: поставь false — море снова статичное.
+ */
+const SEA_WAVES_ENABLED = true;
 
 /** Очки за тип корабля + бонус за дальнюю дистанцию (lane 0 = далеко). */
 const SHIP_SCORE = {
   'ship-cargo': 100, // торговый — проще
+  'ship-container': 120, // контейнеровоз (объёмный стиль)
   'ship-war': 250, // военный стреляет
   'ship-sub': 400, // лодка — быстрее / опаснее
 };
 const LANE_BONUS = [80, 50, 25, 0]; // далеко → близко
 const INTERCEPT_SCORE = 75; // сбил вражескую торпеду
+/** Штраф за каждый выстрел (меньше минимума за корабль = 100). */
+const SHOT_PENALTY = 20;
 
 export class GameScene extends Phaser.Scene {
   constructor() {
@@ -37,6 +49,8 @@ export class GameScene extends Phaser.Scene {
     this.score = 0;
     this.canFire = true;
     this.gameOver = false;
+    this._wentToMenu = false;
+    this._menuCall = null;
     this.holdLeft = false;
     this.holdRight = false;
     this.pointerOverUi = false;
@@ -51,9 +65,10 @@ export class GameScene extends Phaser.Scene {
     this.missiles = this.add.group();
     this.lifeCrate = null;
 
-    this.spawnShip(200, 1, 'ship-cargo');
-    this.spawnShip(480, -1, 'ship-war');
-    this.spawnShip(760, 1, 'ship-sub');
+    this.spawnShip(160, 1, 'ship-cargo');
+    this.spawnShip(420, -1, 'ship-container');
+    this.spawnShip(680, 1, 'ship-war');
+    this.spawnShip(860, -1, 'ship-sub');
 
     this.drawFrame();
     this.drawReticle();
@@ -77,16 +92,83 @@ export class GameScene extends Phaser.Scene {
       loop: true,
       callback: () => this.trySpawnLifeCrate(),
     });
-
-    this.time.delayedCall(4500, () => {
-      if (this.hint?.active) this.tweens.add({ targets: this.hint, alpha: 0, duration: 500 });
-    });
   }
 
   drawSea() {
     const bg = this.add.image(W / 2, H / 2 + (WATERLINE - H * SEA_HORIZON_T), 'sea');
     bg.setDisplaySize(W * 1.15, H * 1.2);
+    bg.setDepth(0);
     this.world.add(bg);
+    this.seaBg = bg;
+    this.seaBgBaseY = bg.y;
+    this.seaBgBaseX = bg.x;
+    this.seaWaveTime = 0;
+
+    if (!SEA_WAVES_ENABLED) return;
+
+    // Полупрозрачный слой «бликов» — едва заметная рябь
+    const ripple = this.add.image(bg.x, bg.y, 'sea');
+    ripple.setDisplaySize(W * 1.18, H * 1.22);
+    ripple.setAlpha(0.28);
+    ripple.setTint(0xa8d8ff);
+    ripple.setBlendMode(Phaser.BlendModes.ADD);
+    ripple.setDepth(1);
+    this.world.add(ripple);
+    this.seaRipple = ripple;
+
+    this.seaGlints = this.add.graphics();
+    this.seaGlints.setDepth(2);
+    this.seaGlints.setAlpha(0.55);
+    this.world.add(this.seaGlints);
+  }
+
+  updateSeaWaves(time, delta) {
+    if (!SEA_WAVES_ENABLED || !this.seaBg) return;
+
+    this.seaWaveTime += delta;
+    const t = this.seaWaveTime;
+
+    // Заметное дыхание горизонта
+    this.seaBg.y = this.seaBgBaseY + Math.sin(t * 0.0014) * 6;
+    this.seaBg.x = this.seaBgBaseX + Math.sin(t * 0.0008) * 8;
+
+    if (this.seaRipple) {
+      this.seaRipple.y = this.seaBgBaseY + Math.sin(t * 0.0019 + 1.2) * 9;
+      this.seaRipple.x = this.seaBgBaseX + Math.cos(t * 0.0011) * 12;
+      this.seaRipple.setAlpha(0.22 + (Math.sin(t * 0.0025) * 0.5 + 0.5) * 0.18);
+      this.seaRipple.setScale(
+        1.02 + Math.sin(t * 0.0013) * 0.015,
+        1.03 + Math.cos(t * 0.0016) * 0.02,
+      );
+    }
+
+    if (this.seaGlints) {
+      const g = this.seaGlints;
+      g.clear();
+      const baseY = WATERLINE + 12;
+      for (let i = 0; i < 7; i += 1) {
+        const alpha = 0.45 - i * 0.04;
+        g.lineStyle(2.5 - i * 0.15, 0xffffff, alpha);
+        const y = baseY + i * 20 + Math.sin(t * 0.0022 + i * 0.9) * 7;
+        const phase = t * 0.0018 + i * 1.4;
+        const drift = ((phase * 55) % (W + 120)) - 60;
+        g.beginPath();
+        for (let x = 0; x <= W + 100; x += 12) {
+          const yy = y + Math.sin((x + phase * 90) * 0.028 + i) * 5;
+          if (x === 0) g.moveTo(drift + x, yy);
+          else g.lineTo(drift + x, yy);
+        }
+        g.strokePath();
+      }
+
+      // Блики-овалы на гребнях
+      g.fillStyle(0xffffff, 0.18);
+      for (let i = 0; i < 6; i += 1) {
+        const gx = ((t * 0.04 + i * 170) % (W + 100)) - 40;
+        const gy = WATERLINE + 28 + i * 18 + Math.sin(t * 0.002 + i) * 6;
+        g.fillEllipse(gx, gy, 48 + (i % 3) * 10, 6);
+      }
+    }
   }
 
   spawnShip(x, dir, forcedKey = null) {
@@ -96,7 +178,13 @@ export class GameScene extends Phaser.Scene {
     const roll = Math.random();
     const key =
       forcedKey ||
-      (roll < 0.38 ? 'ship-cargo' : roll < 0.72 ? 'ship-war' : 'ship-sub');
+      (roll < 0.28
+        ? 'ship-cargo'
+        : roll < 0.52
+          ? 'ship-container'
+          : roll < 0.78
+            ? 'ship-war'
+            : 'ship-sub');
 
     const foamW = 70 + lane * 18;
     const foam = this.add.ellipse(x, y + 2, foamW, 8 + lane * 2, 0xffffff, 0.18 + lane * 0.04);
@@ -104,7 +192,7 @@ export class GameScene extends Phaser.Scene {
 
     const ship = this.add.image(x, y, key);
     ship.setOrigin(0.5, 0.98);
-    const sizeMul = key === 'ship-sub' ? 0.82 : 1;
+    const sizeMul = key === 'ship-sub' ? 0.82 : key === 'ship-container' ? 1.08 : 1;
     const targetW = (85 + lane * 32 + Phaser.Math.Between(-8, 12)) * sizeMul;
     ship.setScale(targetW / Math.max(1, ship.width));
     this.applyShipFacing(ship, key, dir);
@@ -114,13 +202,14 @@ export class GameScene extends Phaser.Scene {
     const base = 12 + lane * 14 + (key === 'ship-sub' ? 8 : 0);
     const speed = base + Math.random() * (16 + lane * 10);
 
-    // Разворот редко: у части кораблей вообще никогда, у остальных — через длинный интервал
-    const mayTurn = Math.random() < 0.28;
-    const turnIn = mayTurn ? Phaser.Math.Between(14000, 32000) : 999999;
+    // Развороты: почти каждый корабль хотя бы раз, пока ещё на экране
+    const turnsLeft = Math.random() < 0.85 ? Phaser.Math.Between(1, 2) : 0;
+    const turnIn = turnsLeft > 0 ? Phaser.Math.Between(2800, 7000) : 999999;
 
     const canFireTorpedo = key === 'ship-war' || key === 'ship-sub';
     // Иногда грузовой запускает ракету (не раньше 3 сек в кадре)
-    const mayLaunchMissile = key === 'ship-cargo' && Math.random() < 0.32;
+    const mayLaunchMissile =
+      (key === 'ship-cargo' || key === 'ship-container') && Math.random() < 0.32;
 
     ship.setData({
       dir,
@@ -131,7 +220,7 @@ export class GameScene extends Phaser.Scene {
       hitHalf: ship.displayWidth * (key === 'ship-sub' ? 0.42 : 0.36),
       foam,
       turnIn,
-      turnsLeft: mayTurn ? Phaser.Math.Between(1, 2) : 0,
+      turnsLeft,
       visibleMs: 0,
       fireAfterMs: canFireTorpedo
         ? Phaser.Math.Between(key === 'ship-sub' ? 1500 : 2000, key === 'ship-sub' ? 4000 : 5000)
@@ -146,8 +235,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   applyShipFacing(ship, key, dir) {
-    // Спрайты: war — нос слева; cargo/sub — нос справа
-    if (key === 'ship-war') ship.setFlipX(dir > 0);
+    // Нос влево у спрайта: war, container. Нос вправо: cargo, sub.
+    if (key === 'ship-war' || key === 'ship-container') ship.setFlipX(dir > 0);
     else ship.setFlipX(dir < 0);
   }
 
@@ -159,6 +248,14 @@ export class GameScene extends Phaser.Scene {
     const key = ship.getData('key');
     const base = 12 + lane * 14 + (key === 'ship-sub' ? 8 : 0);
     ship.setData('speed', base + Math.random() * (16 + lane * 10));
+    // короткий «рывок» — чтобы разворот было видно
+    this.tweens.add({
+      targets: ship,
+      scaleX: ship.scaleX * 1.08,
+      duration: 120,
+      yoyo: true,
+      ease: 'Sine.easeOut',
+    });
   }
 
   drawFrame() {
@@ -179,23 +276,24 @@ export class GameScene extends Phaser.Scene {
   }
 
   drawReticle() {
+    const player = loadPlayer();
+    const sight = SIGHTS.find((s) => s.id === player.equippedSight) || SIGHTS[0];
     this.reticle = this.add.container(this.aimX, WATERLINE);
-    const g = this.add.graphics();
-    g.lineStyle(2, 0xff3344, 0.95);
-    g.lineBetween(-55, 0, 55, 0);
-    g.lineBetween(0, -12, 0, 12);
-    for (let i = -5; i <= 5; i += 1) {
-      if (i === 0) continue;
-      g.lineBetween(i * 9, -5, i * 9, 5);
-    }
-    this.reticle.add(g);
+    const key = sight.texture && this.textures.exists(sight.texture) ? sight.texture : 'sight-classic';
+    const img = this.add.image(0, 0, key);
+    img.setDisplaySize(140, 140);
+    img.setAlpha(0.95);
+    this.reticle.add(img);
     this.reticle.setDepth(100);
   }
 
   drawHud() {
+    const player = loadPlayer();
+    const scoreWord =
+      player.lang === 'en' ? 'SCORE' : player.lang === 'es' ? 'PUNTOS' : 'ОЧКИ';
     const style = { fontFamily: 'Segoe UI, system-ui, sans-serif', color: '#ff5a5a' };
 
-    this.add.text(56, 40, 'ОЧКИ', { ...style, fontSize: '16px', fontStyle: '600' });
+    this.add.text(56, 40, scoreWord, { ...style, fontSize: '16px', fontStyle: '600' });
     this.scoreLabel = this.add.text(130, 36, '0', {
       fontFamily: 'Segoe UI, system-ui, sans-serif',
       fontSize: '28px',
@@ -219,18 +317,8 @@ export class GameScene extends Phaser.Scene {
       this.hearts.push(heart);
     }
 
-    this.hint = this.add
-      .text(W / 2, 400, 'Мышь — прицел   ЛКМ / пробел — огонь   R — заново', {
-        fontFamily: 'Segoe UI, system-ui, sans-serif',
-        fontSize: '14px',
-        color: '#fff',
-        backgroundColor: '#00000099',
-        padding: { x: 10, y: 6 },
-      })
-      .setOrigin(0.5);
-
     this.gameOverText = this.add
-      .text(W / 2, 200, 'ИГРА ОКОНЧЕНА', {
+      .text(W / 2, 200, '', {
         fontFamily: 'Segoe UI, system-ui, sans-serif',
         fontSize: '36px',
         color: '#fff',
@@ -242,25 +330,16 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setVisible(false);
 
-    this.restartText = this.add
-      .text(W / 2, 250, 'R или клик — ещё раз', {
-        fontFamily: 'Segoe UI, system-ui, sans-serif',
-        fontSize: '16px',
-        color: '#ffcccc',
-      })
-      .setOrigin(0.5)
-      .setVisible(false);
-
     this.makeButton(64, 300, '◀', () => {
       this.holdLeft = true;
     });
     this.makeButton(896, 300, '▶', () => {
       this.holdRight = true;
     });
-    this.makeButton(880, 48, 'ГИРО', async () => {
-      const ok = await this.gyro.enable();
-      this.hint.setAlpha(1);
-      this.hint.setText(ok ? 'Гироскоп вкл' : 'Гироскоп недоступен');
+    const gyroLabel =
+      player.lang === 'en' ? 'GYRO' : player.lang === 'es' ? 'GIRO' : 'ГИРО';
+    this.makeButton(880, 48, gyroLabel, async () => {
+      await this.gyro.enable();
     }, 90);
 
     this.input.on('pointerup', () => {
@@ -307,11 +386,18 @@ export class GameScene extends Phaser.Scene {
   bindInput() {
     this.cursors = this.input.keyboard.createCursorKeys();
     this.keys = this.input.keyboard.addKeys('A,D,SPACE,R');
-    this.keys.SPACE.on('down', () => (this.gameOver ? this.restart() : this.tryFire()));
-    this.keys.R.on('down', () => this.restart());
+    this.keys.SPACE.on('down', () => {
+      if (this.gameOver) return;
+      this.tryFire();
+    });
+    this.keys.R.on('down', () => {
+      if (this.gameOver) this.goToMenu();
+      else this.restart();
+    });
 
     const canvas = this.game.canvas;
-    canvas.style.cursor = 'crosshair';
+    canvas.style.cursor = 'none';
+    this.input.setDefaultCursor('none');
 
     this._onMouseMove = (e) => {
       if (this.gameOver || this.pointerOverUi) return;
@@ -330,7 +416,7 @@ export class GameScene extends Phaser.Scene {
     this.input.on('pointerdown', (pointer) => {
       if (this.pointerOverUi) return;
       if (this.gameOver) {
-        this.restart();
+        this.goToMenu();
         return;
       }
       this.setAimX(pointer.x);
@@ -376,6 +462,7 @@ export class GameScene extends Phaser.Scene {
       enemy: false,
     });
     this.torpedoes.add(torpedo);
+    this.addScore(-SHOT_PENALTY, aimX, startY - 24);
 
     this.time.delayedCall(200, () => {
       this.canFire = true;
@@ -393,14 +480,14 @@ export class GameScene extends Phaser.Scene {
   }
 
   addScore(points, x, y) {
-    this.score += points;
+    this.score = Math.max(0, this.score + points);
     this.refreshHud();
-    if (x != null && y != null) {
+    if (x != null && y != null && points !== 0) {
       const popup = this.add
-        .text(x, y, `+${points}`, {
+        .text(x, y, points > 0 ? `+${points}` : `${points}`, {
           fontFamily: 'Segoe UI, system-ui, sans-serif',
           fontSize: '22px',
-          color: '#ffe566',
+          color: points > 0 ? '#ffe566' : '#ff8a8a',
           fontStyle: '700',
           stroke: '#000',
           strokeThickness: 4,
@@ -516,6 +603,8 @@ export class GameScene extends Phaser.Scene {
       box,
       swayT: Math.random() * Math.PI * 2,
       baseX: x,
+      sharkThreat: Math.random() < SHARK_EAT_CHANCE,
+      sharkTriggered: false,
     });
 
     this.lifeCrate = root;
@@ -532,6 +621,12 @@ export class GameScene extends Phaser.Scene {
 
   onLifeCrateLanded(crate) {
     if (!crate?.active || !crate.getData('alive')) return;
+
+    if (crate.getData('sharkThreat') && !crate.getData('sharkTriggered')) {
+      this.triggerSharkEat(crate);
+      return;
+    }
+
     crate.setData('landed', true);
     crate.setData('landLeft', CRATE_LAND_MS);
 
@@ -573,6 +668,111 @@ export class GameScene extends Phaser.Scene {
       duration: 420,
       yoyo: true,
       ease: 'Sine.easeInOut',
+    });
+  }
+
+  triggerSharkEat(crate) {
+    if (!crate?.active || crate.getData('sharkTriggered')) return;
+    crate.setData('sharkTriggered', true);
+    crate.setData('alive', false);
+    this.tweens.killTweensOf(crate);
+
+    const cx = crate.x;
+    const startY = WATERLINE + 70;
+    const peakY = WATERLINE - 70;
+    const endY = WATERLINE + 90;
+    const dir = Math.random() < 0.5 ? -1 : 1;
+
+    const shark = this.textures.exists('shark')
+      ? this.add.image(cx - dir * 40, startY, 'shark')
+      : this.add.rectangle(cx, startY, 120, 48, 0x6a7a88);
+    shark.setDepth(48);
+    shark.setAlpha(0.95);
+    if (shark.setDisplaySize) {
+      shark.setDisplaySize(150, 90);
+      shark.setFlipX(dir < 0);
+      shark.setOrigin(0.55, 0.55);
+    }
+    this.world.add(shark);
+
+    // всплеск при выпрыгивании
+    const splash1 = this.add.ellipse(cx, WATERLINE + 4, 16, 6, 0xc8e8ff, 0.7).setDepth(46);
+    this.tweens.add({
+      targets: splash1,
+      scaleX: 5,
+      scaleY: 2.5,
+      alpha: 0,
+      duration: 420,
+      onComplete: () => splash1.destroy(),
+    });
+
+    // прыжок к ящику
+    this.tweens.add({
+      targets: shark,
+      x: cx + dir * 10,
+      y: peakY,
+      angle: dir * -18,
+      duration: 380,
+      ease: 'Cubic.easeOut',
+      onComplete: () => {
+        // проглатывание
+        if (crate.active) {
+          this.tweens.add({
+            targets: crate,
+            scaleX: 0.05,
+            scaleY: 0.05,
+            alpha: 0,
+            x: shark.x + dir * 18,
+            y: shark.y + 8,
+            duration: 180,
+            ease: 'Back.easeIn',
+            onComplete: () => {
+              if (crate.active) crate.destroy();
+              if (this.lifeCrate === crate) this.lifeCrate = null;
+            },
+          });
+        } else if (this.lifeCrate === crate) {
+          this.lifeCrate = null;
+        }
+
+        // нырок обратно
+        this.tweens.add({
+          targets: shark,
+          x: cx + dir * 90,
+          y: endY,
+          angle: dir * 28,
+          duration: 520,
+          delay: 90,
+          ease: 'Cubic.easeIn',
+          onComplete: () => {
+            const splash2 = this.add
+              .ellipse(shark.x, WATERLINE + 2, 20, 8, 0xaadfff, 0.75)
+              .setDepth(46);
+            this.tweens.add({
+              targets: splash2,
+              scaleX: 4.5,
+              scaleY: 2.2,
+              alpha: 0,
+              duration: 480,
+              onComplete: () => splash2.destroy(),
+            });
+            if (this.textures.exists('splash')) {
+              const burst = this.add.particles(shark.x, WATERLINE, 'splash', {
+                speed: { min: 40, max: 120 },
+                angle: { min: 220, max: 320 },
+                lifespan: 500,
+                scale: { start: 0.7, end: 0 },
+                quantity: 8,
+                emitting: false,
+              });
+              burst.setDepth(47);
+              burst.explode(10);
+              this.time.delayedCall(600, () => burst.destroy());
+            }
+            shark.destroy();
+          },
+        });
+      },
     });
   }
 
@@ -627,12 +827,39 @@ export class GameScene extends Phaser.Scene {
     return true;
   }
 
-  endGame(reason = 'ИГРА ОКОНЧЕНА') {
+  endGame(reason) {
+    if (this.gameOver) return;
     this.gameOver = true;
-    this.gameOverText.setText(reason);
+    const player = loadPlayer();
+    const text =
+      reason ||
+      (player.lang === 'en'
+        ? 'GAME OVER'
+        : player.lang === 'es'
+          ? 'FIN DEL JUEGO'
+          : 'ИГРА ОКОНЧЕНА');
+    this.gameOverText.setText(text);
     this.gameOverText.setVisible(true);
-    this.restartText.setVisible(true);
     if (this.game.canvas) this.game.canvas.style.cursor = 'default';
+    this._menuCall = this.time.delayedCall(1600, () => this.goToMenu());
+  }
+
+  destroyedMessage() {
+    const player = loadPlayer();
+    if (player.lang === 'en') return `SHIP DESTROYED\nScore: ${this.score}`;
+    if (player.lang === 'es') return `BARCO DESTRUIDO\nPuntos: ${this.score}`;
+    return `КОРАБЛЬ УНИЧТОЖЕН\nОчки: ${this.score}`;
+  }
+
+  goToMenu() {
+    if (this._wentToMenu) return;
+    this._wentToMenu = true;
+    if (this._menuCall) {
+      this._menuCall.remove(false);
+      this._menuCall = null;
+    }
+    this.teardownInput();
+    this.scene.start('Menu', { score: this.score });
   }
 
   destroyShip(ship) {
@@ -791,10 +1018,12 @@ export class GameScene extends Phaser.Scene {
     this.loseLife();
     this.cameras.main.shake(160, 0.012);
     this.cameras.main.flash(140, 220, 40, 20);
-    if (this.lives <= 0) this.endGame(`КОРАБЛЬ УНИЧТОЖЕН\nОчки: ${this.score}`);
+    if (this.lives <= 0) this.endGame(this.destroyedMessage());
   }
 
   update(_t, delta) {
+    this.updateSeaWaves(_t, delta);
+
     if (!this.gameOver) {
       let turn = 0;
       if (this.cursors.left.isDown || this.keys.A.isDown || this.holdLeft) turn -= 1;
@@ -816,7 +1045,7 @@ export class GameScene extends Phaser.Scene {
         ship.setData('turnsLeft', ship.getData('turnsLeft') - 1);
         turnIn =
           ship.getData('turnsLeft') > 0
-            ? Phaser.Math.Between(18000, 40000)
+            ? Phaser.Math.Between(4000, 9000)
             : 999999;
       }
       ship.setData('turnIn', turnIn);
@@ -973,7 +1202,7 @@ export class GameScene extends Phaser.Scene {
     if (this.gameOver) return;
     this.loseLife();
     this.cameras.main.flash(120, 180, 30, 30);
-    if (this.lives <= 0) this.endGame(`КОРАБЛЬ УНИЧТОЖЕН\nОчки: ${this.score}`);
+    if (this.lives <= 0) this.endGame(this.destroyedMessage());
   }
 
   resolveImpact(torpedo) {

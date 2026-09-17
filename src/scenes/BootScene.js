@@ -115,6 +115,50 @@ function keyBlackToAlpha(scene, key, threshold = 28) {
   scene.textures.addCanvas(key, canvas).refresh();
 }
 
+function prepareMagentaOnly(scene, key, { keepBrightOnly = false } = {}) {
+  const tex = scene.textures.get(key);
+  const src = tex.getSourceImage();
+  const w = src.width;
+  const h = src.height;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(src, 0, 0);
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  const cx = w / 2;
+  const cy = h / 2;
+
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      const i = (y * w + x) * 4;
+      const r = d[i];
+      const g = d[i + 1];
+      const b = d[i + 2];
+      const magenta = r > 180 && b > 150 && g < 120 && r - g > 60 && b - g > 50;
+      if (magenta) {
+        d[i + 3] = 0;
+        continue;
+      }
+      if (keepBrightOnly) {
+        // Убираем тёмную «подложку»/линзу, оставляем яркий металл линий
+        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        const nearAxis = Math.abs(x - cx) < w * 0.045 || Math.abs(y - cy) < h * 0.045;
+        const tipZone =
+          (Math.abs(x - cx) > w * 0.28 && Math.abs(y - cy) < h * 0.08) ||
+          (Math.abs(y - cy) > h * 0.28 && Math.abs(x - cx) < w * 0.08);
+        if (lum < 90 || !(nearAxis || tipZone)) {
+          d[i + 3] = 0;
+        }
+      }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  if (scene.textures.exists(key)) scene.textures.remove(key);
+  scene.textures.addCanvas(key, canvas).refresh();
+}
+
 function makeParticleDot(scene, key, color, size = 8) {
   const g = scene.make.graphics({ x: 0, y: 0 }, false);
   g.fillStyle(color, 1);
@@ -193,14 +237,27 @@ export class BootScene extends Phaser.Scene {
   preload() {
     this.load.image('sea', 'assets/sea.png');
     this.load.image('ship-cargo', 'assets/ship-cargo.png');
+    this.load.image('ship-container', 'assets/ship-container.png');
     this.load.image('ship-war', 'assets/ship-war.png');
     this.load.image('ship-sub', 'assets/ship-sub.png');
     this.load.image('explosion', 'assets/explosion.png');
     this.load.image('torpedo', 'assets/torpedo.png');
+    this.load.image('sight-classic', 'assets/ui/sight-classic.png');
+    this.load.image('sight-holo', 'assets/ui/sight-holo.png');
+    this.load.image('sight-brass', 'assets/ui/sight-brass.png');
+    this.load.image('sight-diamond', 'assets/ui/sight-diamond.png');
+    this.load.image('sight-minimal', 'assets/ui/sight-minimal.png');
+    this.load.image('icon-anchor', 'assets/ui/icon-anchor.png');
+    this.load.image('portrait-default', 'assets/ui/portrait-default.png');
+    this.load.image('portrait-captain', 'assets/ui/portrait-captain.png');
+    this.load.image('portrait-officer', 'assets/ui/portrait-officer.png');
+    this.load.image('portrait-pirate', 'assets/ui/portrait-pirate.png');
+    this.load.image('shark', 'assets/ui/shark.png');
   }
 
   create() {
     prepareSprite(this, 'ship-cargo', { stripWaterBottom: 0.14 });
+    prepareSprite(this, 'ship-container', { stripWaterBottom: 0.12 });
     prepareSprite(this, 'ship-war', { stripWaterBottom: 0.22 });
     prepareSprite(this, 'ship-sub', { stripWaterBottom: 0.18 });
     keyBlackToAlpha(this, 'explosion', 32);
@@ -212,7 +269,7 @@ export class BootScene extends Phaser.Scene {
     makeParticleDot(this, 'bubble', 0xc8eeff, 4);
 
     prepareMagentaSprite(this, 'torpedo').then(() => {
-      this.scene.start('Game');
+      this.scene.start('Menu');
     });
   }
 }
