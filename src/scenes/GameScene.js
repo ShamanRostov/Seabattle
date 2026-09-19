@@ -1,6 +1,13 @@
 import Phaser from 'phaser';
 import { createGyroAim } from '../input/gyro.js';
-import { loadPlayer, SIGHTS } from '../data/playerStore.js';
+import {
+  loadPlayer,
+  getEquippedSight,
+  isPirateTheme,
+  getLoadoutPerks,
+  CRATE_LOOT_META,
+  formatDuration,
+} from '../data/playerStore.js';
 
 const W = 960;
 const H = 540;
@@ -17,6 +24,11 @@ const CRATE_LAND_MS = 2000; // окно на торпеду после прив�
 const CRATE_FALL_MS = 3800;
 /** Шанс, что акула проглотит ящик при приводнении */
 const SHARK_EAT_CHANCE = 0.34;
+/** Длительность временных баффов из сундука */
+const CRATE_BUFF_MS = 10000;
+/** Содержимое сундука (вид всегда один и тот же) */
+const CRATE_LOOT = ['life', 'score2', 'scoreDown', 'triple', 'rum'];
+const TRIPLE_SPREAD = 38;
 
 /**
  * Лёгкое волнение воды.
@@ -42,11 +54,19 @@ export class GameScene extends Phaser.Scene {
   }
 
   create() {
+    this.playerState = loadPlayer();
+    this.perks = getLoadoutPerks(this.playerState);
+    this.maxLives = MAX_LIVES + (this.perks.bonusStartLife || 0);
+
     this.aimX = W / 2;
     this.aimTargetX = W / 2;
     this.aimSmooth = 10;
-    this.lives = MAX_LIVES;
+    this.lives = this.maxLives;
     this.score = 0;
+    this.battleTimeMs = 0;
+    this.buffTripleMs = 0;
+    this.buffRumMs = 0;
+    this.echoReadyMs = 0;
     this.canFire = true;
     this.gameOver = false;
     this._wentToMenu = false;
@@ -95,8 +115,11 @@ export class GameScene extends Phaser.Scene {
   }
 
   drawSea() {
-    const bg = this.add.image(W / 2, H / 2 + (WATERLINE - H * SEA_HORIZON_T), 'sea');
-    bg.setDisplaySize(W * 1.15, H * 1.2);
+    const pirate = isPirateTheme(loadPlayer());
+    // Пиратское toy-море: горизонт чуть ниже, чтобы изометрические корпуса сидели в воде
+    const horizonT = pirate ? 0.52 : SEA_HORIZON_T;
+    const bg = this.add.image(W / 2, H / 2 + (WATERLINE - H * horizonT), 'sea');
+    bg.setDisplaySize(W * (pirate ? 1.2 : 1.15), H * (pirate ? 1.28 : 1.2));
     bg.setDepth(0);
     this.world.add(bg);
     this.seaBg = bg;
@@ -108,9 +131,9 @@ export class GameScene extends Phaser.Scene {
 
     // Полупрозрачный слой «бликов» — едва заметная рябь
     const ripple = this.add.image(bg.x, bg.y, 'sea');
-    ripple.setDisplaySize(W * 1.18, H * 1.22);
-    ripple.setAlpha(0.28);
-    ripple.setTint(0xa8d8ff);
+    ripple.setDisplaySize(W * (pirate ? 1.22 : 1.18), H * (pirate ? 1.3 : 1.22));
+    ripple.setAlpha(pirate ? 0.16 : 0.28);
+    ripple.setTint(pirate ? 0xffe8c0 : 0xa8d8ff);
     ripple.setBlendMode(Phaser.BlendModes.ADD);
     ripple.setDepth(1);
     this.world.add(ripple);
@@ -187,12 +210,21 @@ export class GameScene extends Phaser.Scene {
             : 'ship-sub');
 
     const foamW = 70 + lane * 18;
-    const foam = this.add.ellipse(x, y + 2, foamW, 8 + lane * 2, 0xffffff, 0.18 + lane * 0.04);
+    const pirate = isPirateTheme(loadPlayer());
+    const foam = this.add.ellipse(
+      x,
+      y + 2,
+      foamW * (pirate ? 1.15 : 1),
+      (8 + lane * 2) * (pirate ? 1.4 : 1),
+      pirate ? 0xfff6e0 : 0xffffff,
+      pirate ? 0.45 : 0.18 + lane * 0.04,
+    );
     this.world.add(foam);
 
     const ship = this.add.image(x, y, key);
     ship.setOrigin(0.5, 0.98);
-    const sizeMul = key === 'ship-sub' ? 0.82 : key === 'ship-container' ? 1.08 : 1;
+    const sizeMul =
+      (key === 'ship-sub' ? 0.82 : key === 'ship-container' ? 1.08 : 1) * (pirate ? 1.35 : 1);
     const targetW = (85 + lane * 32 + Phaser.Math.Between(-8, 12)) * sizeMul;
     ship.setScale(targetW / Math.max(1, ship.width));
     this.applyShipFacing(ship, key, dir);
@@ -219,6 +251,7 @@ export class GameScene extends Phaser.Scene {
       key,
       hitHalf: ship.displayWidth * (key === 'ship-sub' ? 0.42 : 0.36),
       foam,
+      wakeAcc: 0,
       turnIn,
       turnsLeft,
       visibleMs: 0,
@@ -235,7 +268,12 @@ export class GameScene extends Phaser.Scene {
   }
 
   applyShipFacing(ship, key, dir) {
-    // Нос влево у спрайта: war, container. Нос вправо: cargo, sub.
+    // Пиратские изометрические спрайты: нос у всех влево-вниз → flip при движении вправо
+    if (isPirateTheme(loadPlayer())) {
+      ship.setFlipX(dir > 0);
+      return;
+    }
+    // Классика: нос влево у war/container; нос вправо у cargo/sub
     if (key === 'ship-war' || key === 'ship-container') ship.setFlipX(dir > 0);
     else ship.setFlipX(dir < 0);
   }
@@ -277,9 +315,10 @@ export class GameScene extends Phaser.Scene {
 
   drawReticle() {
     const player = loadPlayer();
-    const sight = SIGHTS.find((s) => s.id === player.equippedSight) || SIGHTS[0];
+    const sight = getEquippedSight(player);
     this.reticle = this.add.container(this.aimX, WATERLINE);
-    const key = sight.texture && this.textures.exists(sight.texture) ? sight.texture : 'sight-classic';
+    const fallback = isPirateTheme(player) ? 'sight-spyglass' : 'sight-classic';
+    const key = sight.texture && this.textures.exists(sight.texture) ? sight.texture : fallback;
     const img = this.add.image(0, 0, key);
     img.setDisplaySize(140, 140);
     img.setAlpha(0.95);
@@ -291,6 +330,8 @@ export class GameScene extends Phaser.Scene {
     const player = loadPlayer();
     const scoreWord =
       player.lang === 'en' ? 'SCORE' : player.lang === 'es' ? 'PUNTOS' : 'ОЧКИ';
+    const timeWord =
+      player.lang === 'en' ? 'TIME' : player.lang === 'es' ? 'TIEMPO' : 'ВРЕМЯ';
     const style = { fontFamily: 'Segoe UI, system-ui, sans-serif', color: '#ff5a5a' };
 
     this.add.text(56, 40, scoreWord, { ...style, fontSize: '16px', fontStyle: '600' });
@@ -303,8 +344,22 @@ export class GameScene extends Phaser.Scene {
       strokeThickness: 4,
     });
 
+    this.add
+      .text(W - 56, 40, timeWord, { ...style, fontSize: '16px', fontStyle: '600' })
+      .setOrigin(1, 0);
+    this.timeLabel = this.add
+      .text(W - 56, 36, '0:00', {
+        fontFamily: 'Segoe UI, system-ui, sans-serif',
+        fontSize: '28px',
+        color: '#ffffff',
+        fontStyle: '700',
+        stroke: '#000000',
+        strokeThickness: 4,
+      })
+      .setOrigin(1, 0);
+
     this.hearts = [];
-    for (let i = 0; i < MAX_LIVES; i += 1) {
+    for (let i = 0; i < this.maxLives; i += 1) {
       const heart = this.add
         .text(56 + i * 36, 78, '♥', {
           fontFamily: 'Segoe UI, system-ui, sans-serif',
@@ -330,23 +385,19 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setVisible(false);
 
-    this.makeButton(64, 300, '◀', () => {
-      this.holdLeft = true;
-    });
-    this.makeButton(896, 300, '▶', () => {
-      this.holdRight = true;
-    });
-    const gyroLabel =
-      player.lang === 'en' ? 'GYRO' : player.lang === 'es' ? 'GIRO' : 'ГИРО';
-    this.makeButton(880, 48, gyroLabel, async () => {
-      await this.gyro.enable();
-    }, 90);
-
-    this.input.on('pointerup', () => {
-      this.holdLeft = false;
-      this.holdRight = false;
-    });
-
+    // Стрелки и «ГИРО» убраны — управление мышью / клавишами / гиро без кнопки на экране
+    this.buffLabel = this.add
+      .text(W / 2, 72, '', {
+        fontFamily: 'Segoe UI, system-ui, sans-serif',
+        fontSize: '16px',
+        color: '#ffe8a0',
+        fontStyle: '700',
+        stroke: '#000',
+        strokeThickness: 4,
+        align: 'center',
+      })
+      .setOrigin(0.5, 0)
+      .setDepth(130);
     this.refreshHud();
   }
 
@@ -374,7 +425,15 @@ export class GameScene extends Phaser.Scene {
   }
 
   setAimX(x) {
-    this.aimTargetX = Phaser.Math.Clamp(x, AIM_MIN, AIM_MAX);
+    let next = x;
+    if (this.buffRumMs > 0) next = W - x;
+    this.aimTargetX = Phaser.Math.Clamp(next, AIM_MIN, AIM_MAX);
+  }
+
+  /** Инкремент прицела от клавиш/гиро (ром инвертирует направление) */
+  nudgeAim(deltaX) {
+    const dir = this.buffRumMs > 0 ? -1 : 1;
+    this.aimTargetX = Phaser.Math.Clamp(this.aimTargetX + deltaX * dir, AIM_MIN, AIM_MAX);
   }
 
   applyAim(delta) {
@@ -451,18 +510,42 @@ export class GameScene extends Phaser.Scene {
 
     const aimX = this.aimX;
     const startY = PLAYER_EDGE_Y - 10;
-    const torpedo = this.makeTorpedoSprite(aimX, startY, { angle: -90, lengthPx: 108 });
-    torpedo.setData({
-      progress: 0,
-      aimX,
-      startY,
-      hitChecked: false,
-      startScale: torpedo.getData('startScale'),
-      trail: torpedo.getData('trail'),
-      enemy: false,
+    const aims =
+      this.buffTripleMs > 0
+        ? [aimX - TRIPLE_SPREAD, aimX, aimX + TRIPLE_SPREAD].map((x) =>
+            Phaser.Math.Clamp(x, AIM_MIN, AIM_MAX),
+          )
+        : [aimX];
+
+    // Эхо-ядро (Весёлый Роджер) — доп. торпеда со смещением, если кулдаун готов
+    const echoOk = this.perks.echoShot && this.echoReadyMs <= 0 && this.buffTripleMs <= 0;
+    if (echoOk) {
+      const side = Math.random() < 0.5 ? -1 : 1;
+      aims.push(
+        Phaser.Math.Clamp(aimX + side * (this.perks.echoSpread || 32), AIM_MIN, AIM_MAX),
+      );
+      this.echoReadyMs = this.perks.echoCooldownMs || 4500;
+    }
+
+    aims.forEach((ax) => {
+      const torpedo = this.makeTorpedoSprite(ax, startY, { angle: -90, lengthPx: 108 });
+      torpedo.setData({
+        progress: 0,
+        aimX: ax,
+        startY,
+        hitChecked: false,
+        startScale: torpedo.getData('startScale'),
+        trail: torpedo.getData('trail'),
+        enemy: false,
+      });
+      this.torpedoes.add(torpedo);
     });
-    this.torpedoes.add(torpedo);
-    this.addScore(-SHOT_PENALTY, aimX, startY - 24);
+
+    const penalty = Math.max(
+      5,
+      Math.round(SHOT_PENALTY * (this.perks.shotPenaltyMult ?? 1) + (this.perks.shotPenaltyAdd || 0)),
+    );
+    this.addScore(-penalty, aimX, startY - 24);
 
     this.time.delayedCall(200, () => {
       this.canFire = true;
@@ -471,12 +554,60 @@ export class GameScene extends Phaser.Scene {
 
   refreshHud() {
     if (this.scoreLabel) this.scoreLabel.setText(String(this.score));
+    this.refreshBuffHud();
+  }
+
+  refreshBuffHud() {
+    if (!this.buffLabel) return;
+    const player = loadPlayer();
+    const parts = [];
+    if (this.buffTripleMs > 0) {
+      const sec = Math.ceil(this.buffTripleMs / 1000);
+      parts.push(
+        player.lang === 'en'
+          ? `TRIPLE ${sec}s`
+          : player.lang === 'es'
+            ? `TRIPLE ${sec}s`
+            : `ТРОЙНОЙ ${sec}с`,
+      );
+    }
+    if (this.buffRumMs > 0) {
+      const sec = Math.ceil(this.buffRumMs / 1000);
+      parts.push(
+        player.lang === 'en' ? `RUM ${sec}s` : player.lang === 'es' ? `RON ${sec}s` : `РОМ ${sec}с`,
+      );
+    }
+    this.buffLabel.setText(parts.join('  ·  '));
+  }
+
+  tickBuffs(delta) {
+    let changed = false;
+    if (this.buffTripleMs > 0) {
+      this.buffTripleMs = Math.max(0, this.buffTripleMs - delta);
+      changed = true;
+    }
+    if (this.buffRumMs > 0) {
+      this.buffRumMs = Math.max(0, this.buffRumMs - delta);
+      changed = true;
+    }
+    if (this.echoReadyMs > 0) {
+      this.echoReadyMs = Math.max(0, this.echoReadyMs - delta);
+    }
+    if (changed) this.refreshBuffHud();
+    this.updateCrateScan();
   }
 
   pointsForShip(ship) {
     const key = ship.getData('key') || 'ship-cargo';
     const lane = ship.getData('lane') || 0;
-    return (SHIP_SCORE[key] || 100) + (LANE_BONUS[lane] || 0);
+    let pts = (SHIP_SCORE[key] || 100) + (LANE_BONUS[lane] || 0);
+    const mult = this.perks.scoreByShip?.[key];
+    if (mult) pts = Math.round(pts * mult);
+    if (this.perks.critChance > 0 && Math.random() < this.perks.critChance) {
+      pts = Math.round(pts * (this.perks.critMult || 1.5));
+      return { pts, crit: true };
+    }
+    return { pts, crit: false };
   }
 
   addScore(points, x, y) {
@@ -521,7 +652,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   gainLife() {
-    if (this.lives >= MAX_LIVES) return false;
+    if (this.lives >= this.maxLives) return false;
     const heart = this.hearts[this.lives];
     this.lives += 1;
     if (heart?.active) {
@@ -540,7 +671,6 @@ export class GameScene extends Phaser.Scene {
 
   trySpawnLifeCrate() {
     if (this.gameOver) return;
-    if (this.lives >= MAX_LIVES) return;
     if (this.lifeCrate?.active) return;
     this.spawnLifeCrate(Phaser.Math.Between(160, W - 160));
   }
@@ -553,58 +683,105 @@ export class GameScene extends Phaser.Scene {
     const root = this.add.container(x, startY);
     root.setDepth(45);
 
-    const canopy = this.add.graphics();
-    canopy.fillStyle(0xe8eef5, 0.95);
-    canopy.beginPath();
-    canopy.moveTo(-34, -8);
-    canopy.lineTo(-28, -28);
-    canopy.lineTo(0, -36);
-    canopy.lineTo(28, -28);
-    canopy.lineTo(34, -8);
-    canopy.closePath();
-    canopy.fillPath();
-    canopy.lineStyle(2, 0xc45a4a, 1);
-    canopy.strokePath();
-    canopy.lineStyle(1.5, 0xc45a4a, 0.9);
-    for (let i = -2; i <= 2; i += 1) {
-      canopy.lineBetween(i * 12, -30, i * 6, -8);
+    const pirate = isPirateTheme(loadPlayer());
+    const useBalloon = pirate && this.textures.exists('balloon-crate');
+    const useCrate = pirate && this.textures.exists('crate');
+
+    let canopy;
+    let cords;
+    let box;
+
+    if (useBalloon) {
+      // сундук на воздушном шаре — один спрайт
+      box = this.add.image(0, 0, 'balloon-crate');
+      box.setOrigin(0.5, 0.92);
+      box.setDisplaySize(78, 150);
+      canopy = box; // при приводнении «улетает» шар вместе с верхом
+      cords = null;
+      root.add(box);
+      root.setData('balloon', true);
+    } else if (useCrate) {
+      box = this.add.image(0, 6, 'crate');
+      box.setDisplaySize(56, 50);
+      canopy = this.add.graphics();
+      canopy.fillStyle(0xf5efe0, 0.92);
+      canopy.beginPath();
+      canopy.moveTo(-30, -6);
+      canopy.lineTo(-24, -26);
+      canopy.lineTo(0, -34);
+      canopy.lineTo(24, -26);
+      canopy.lineTo(30, -6);
+      canopy.closePath();
+      canopy.fillPath();
+      canopy.lineStyle(2, 0xb85a3a, 1);
+      canopy.strokePath();
+      cords = this.add.graphics();
+      cords.lineStyle(1.5, 0xd8c8a0, 0.85);
+      cords.lineBetween(-24, -6, -8, 8);
+      cords.lineBetween(24, -6, 8, 8);
+      root.add([canopy, cords, box]);
+    } else {
+      canopy = this.add.graphics();
+      canopy.fillStyle(0xe8eef5, 0.95);
+      canopy.beginPath();
+      canopy.moveTo(-34, -8);
+      canopy.lineTo(-28, -28);
+      canopy.lineTo(0, -36);
+      canopy.lineTo(28, -28);
+      canopy.lineTo(34, -8);
+      canopy.closePath();
+      canopy.fillPath();
+      canopy.lineStyle(2, 0xc45a4a, 1);
+      canopy.strokePath();
+      canopy.lineStyle(1.5, 0xc45a4a, 0.9);
+      for (let i = -2; i <= 2; i += 1) {
+        canopy.lineBetween(i * 12, -30, i * 6, -8);
+      }
+
+      cords = this.add.graphics();
+      cords.lineStyle(1.5, 0xd8c8a0, 0.85);
+      cords.lineBetween(-26, -8, -10, 10);
+      cords.lineBetween(26, -8, 10, 10);
+      cords.lineBetween(-8, -8, -4, 10);
+      cords.lineBetween(8, -8, 4, 10);
+
+      box = this.add.graphics();
+      box.fillStyle(0xb8894a, 1);
+      box.fillRoundedRect(-14, 10, 28, 24, 3);
+      box.lineStyle(2, 0x6e4a22, 1);
+      box.strokeRoundedRect(-14, 10, 28, 24, 3);
+      box.lineStyle(1.5, 0x8a6230, 1);
+      box.lineBetween(-14, 22, 14, 22);
+      box.lineBetween(0, 10, 0, 34);
+      box.fillStyle(0xff2d4a, 1);
+      box.fillCircle(0, 22, 7);
+      box.fillStyle(0xffffff, 1);
+      box.fillRect(-4, 20, 8, 4);
+      box.fillRect(-1.5, 17.5, 3, 9);
+
+      root.add([canopy, cords, box]);
     }
 
-    const cords = this.add.graphics();
-    cords.lineStyle(1.5, 0xd8c8a0, 0.85);
-    cords.lineBetween(-26, -8, -10, 10);
-    cords.lineBetween(26, -8, 10, 10);
-    cords.lineBetween(-8, -8, -4, 10);
-    cords.lineBetween(8, -8, 4, 10);
-
-    const box = this.add.graphics();
-    box.fillStyle(0xb8894a, 1);
-    box.fillRoundedRect(-14, 10, 28, 24, 3);
-    box.lineStyle(2, 0x6e4a22, 1);
-    box.strokeRoundedRect(-14, 10, 28, 24, 3);
-    box.lineStyle(1.5, 0x8a6230, 1);
-    box.lineBetween(-14, 22, 14, 22);
-    box.lineBetween(0, 10, 0, 34);
-    box.fillStyle(0xff2d4a, 1);
-    box.fillCircle(0, 22, 7);
-    box.fillStyle(0xffffff, 1);
-    box.fillRect(-4, 20, 8, 4);
-    box.fillRect(-1.5, 17.5, 3, 9);
-
-    root.add([canopy, cords, box]);
+    const loot = Phaser.Utils.Array.GetRandom(CRATE_LOOT);
+    const sharkChance = Math.min(0.85, SHARK_EAT_CHANCE * (this.perks.sharkEatMult ?? 1));
+    const baseHit = useBalloon ? 32 : 28;
 
     root.setData({
       alive: true,
       landed: false,
       landLeft: CRATE_LAND_MS,
-      hitHalf: 28,
+      hitHalf: baseHit * (this.perks.crateHitMult ?? 1),
       canopy,
       cords,
       box,
       swayT: Math.random() * Math.PI * 2,
       baseX: x,
-      sharkThreat: Math.random() < SHARK_EAT_CHANCE,
+      sharkThreat: Math.random() < sharkChance,
       sharkTriggered: false,
+      balloon: !!useBalloon,
+      loot,
+      scanned: false,
+      scanMark: null,
     });
 
     this.lifeCrate = root;
@@ -613,8 +790,8 @@ export class GameScene extends Phaser.Scene {
     this.tweens.add({
       targets: root,
       y: landY,
-      duration: CRATE_FALL_MS,
-      ease: 'Sine.easeIn',
+      duration: useBalloon ? CRATE_FALL_MS + 900 : CRATE_FALL_MS,
+      ease: useBalloon ? 'Sine.easeOut' : 'Sine.easeIn',
       onComplete: () => this.onLifeCrateLanded(root),
     });
   }
@@ -632,24 +809,64 @@ export class GameScene extends Phaser.Scene {
 
     const canopy = crate.getData('canopy');
     const cords = crate.getData('cords');
-    if (canopy) {
-      this.tweens.add({
-        targets: canopy,
-        alpha: 0,
-        y: -20,
-        scaleX: 1.2,
-        scaleY: 0.3,
-        duration: 280,
-        onComplete: () => canopy.destroy(),
-      });
-    }
-    if (cords) {
-      this.tweens.add({
-        targets: cords,
-        alpha: 0,
-        duration: 200,
-        onComplete: () => cords.destroy(),
-      });
+    const box = crate.getData('box');
+
+    if (crate.getData('balloon') && box) {
+      // шар улетает вверх, остаётся сундук
+      if (this.textures.exists('crate')) {
+        const ghost = this.add.image(crate.x, crate.y - 70, 'balloon-crate');
+        ghost.setOrigin(0.5, 0.92);
+        ghost.setDisplaySize(78, 150);
+        ghost.setDepth(46);
+        this.world.add(ghost);
+        this.tweens.add({
+          targets: ghost,
+          y: crate.y - 220,
+          alpha: 0,
+          scaleX: 0.55,
+          scaleY: 0.55,
+          duration: 700,
+          ease: 'Sine.easeIn',
+          onComplete: () => ghost.destroy(),
+        });
+        box.setTexture('crate');
+        box.setOrigin(0.5, 0.9);
+        box.setDisplaySize(52, 46);
+        box.setPosition(0, 0);
+        if (crate.getData('scanned')) {
+          crate.setData('scanned', false);
+          this.revealCrateLoot(crate);
+        }
+      } else {
+        this.tweens.add({
+          targets: box,
+          y: -90,
+          alpha: 0.15,
+          scaleX: 0.5,
+          scaleY: 0.5,
+          duration: 650,
+        });
+      }
+    } else {
+      if (canopy && canopy !== box) {
+        this.tweens.add({
+          targets: canopy,
+          alpha: 0,
+          y: -20,
+          scaleX: 1.2,
+          scaleY: 0.3,
+          duration: 280,
+          onComplete: () => canopy.destroy(),
+        });
+      }
+      if (cords) {
+        this.tweens.add({
+          targets: cords,
+          alpha: 0,
+          duration: 200,
+          onComplete: () => cords.destroy(),
+        });
+      }
     }
 
     const splash = this.add.ellipse(crate.x, WATERLINE, 10, 4, 0xffffff, 0.55).setDepth(44);
@@ -801,30 +1018,154 @@ export class GameScene extends Phaser.Scene {
     if (!crate?.active || !crate.getData('alive') || !crate.getData('landed')) return false;
     const x = crate.x;
     const y = crate.y;
+    let loot = crate.getData('loot') || Phaser.Utils.Array.GetRandom(CRATE_LOOT);
     this.spawnHit(x, WATERLINE - 8);
     this.destroyLifeCrate(false);
-    if (this.gainLife()) {
-      const popup = this.add
-        .text(x, y - 18, '+♥', {
-          fontFamily: 'Segoe UI, system-ui, sans-serif',
-          fontSize: '28px',
-          color: '#ff6b81',
+
+    if (loot === 'life' && this.lives >= this.maxLives) {
+      const alt = CRATE_LOOT.filter((k) => k !== 'life');
+      loot = Phaser.Utils.Array.GetRandom(alt);
+    }
+
+    // Корсар: шанс отменить плохой лут
+    if (
+      (loot === 'scoreDown' || loot === 'rum') &&
+      this.perks.badLootSaveChance > 0 &&
+      Math.random() < this.perks.badLootSaveChance
+    ) {
+      this.showCratePopup(
+        x,
+        y,
+        this.playerState.lang === 'en'
+          ? 'SAVED!'
+          : this.playerState.lang === 'es'
+            ? '¡SALVADO!'
+            : 'СПАСЁН!',
+        '#7CFF9A',
+      );
+      return true;
+    }
+
+    this.applyCrateLoot(loot, x, y);
+    return true;
+  }
+
+  showCratePopup(x, y, label, color) {
+    const popup = this.add
+      .text(x, y - 18, label, {
+        fontFamily: 'Segoe UI, system-ui, sans-serif',
+        fontSize: '24px',
+        color,
+        fontStyle: '700',
+        stroke: '#000',
+        strokeThickness: 4,
+      })
+      .setOrigin(0.5)
+      .setDepth(120);
+    this.tweens.add({
+      targets: popup,
+      y: y - 64,
+      alpha: 0,
+      duration: 1100,
+      ease: 'Cubic.easeOut',
+      onComplete: () => popup.destroy(),
+    });
+  }
+
+  applyCrateLoot(loot, x, y) {
+    const player = this.playerState || loadPlayer();
+    let label = '';
+    let color = '#ffe566';
+
+    if (loot === 'life') {
+      this.gainLife();
+      label = '+♥';
+      color = '#ff6b81';
+    } else if (loot === 'score2') {
+      const before = this.score;
+      this.score = before * 2;
+      this.refreshHud();
+      label = `x2! +${this.score - before}`;
+      color = '#7CFF9A';
+    } else if (loot === 'scoreDown') {
+      const before = this.score;
+      this.score = Math.max(0, Math.floor(before / 1.5));
+      this.refreshHud();
+      label = `÷1.5 −${before - this.score}`;
+      color = '#ff8a8a';
+    } else if (loot === 'triple') {
+      this.buffTripleMs = CRATE_BUFF_MS;
+      label =
+        player.lang === 'en'
+          ? 'TRIPLE SALVO!'
+          : player.lang === 'es'
+            ? '¡SALVA TRIPLE!'
+            : 'ТРОЙНОЙ ЗАЛП!';
+      color = '#7AD0FF';
+    } else if (loot === 'rum') {
+      this.buffRumMs = CRATE_BUFF_MS;
+      label =
+        player.lang === 'en' ? 'RUM! REVERSED' : player.lang === 'es' ? '¡RON! AL REVÉS' : 'РОМ! НАОБОРОТ';
+      color = '#E8A0FF';
+    }
+
+    this.refreshBuffHud();
+    if (label) this.showCratePopup(x, y, label, color);
+  }
+
+  /** Голограф: при наведении на сундук меняем спрайт на тип лута */
+  updateCrateScan() {
+    const crate = this.lifeCrate;
+    if (!crate?.active || !crate.getData('alive')) return;
+    if (!this.perks.scanCrate) return;
+
+    const half = (crate.getData('hitHalf') || 28) + 36;
+    const near = Math.abs(this.aimX - crate.x) <= half;
+    if (near && !crate.getData('scanned')) {
+      this.revealCrateLoot(crate);
+    }
+  }
+
+  revealCrateLoot(crate) {
+    if (!crate?.active || crate.getData('scanned')) return;
+    crate.setData('scanned', true);
+    const loot = crate.getData('loot');
+    const meta = CRATE_LOOT_META[loot] || CRATE_LOOT_META.life;
+    const box = crate.getData('box');
+    const lang = this.playerState?.lang || 'ru';
+
+    if (box?.setTint) {
+      box.setTint(meta.tint);
+    } else if (box?.clearTint) {
+      /* graphics box — skip */
+    }
+
+    // Убираем старую метку
+    const old = crate.getData('scanMark');
+    if (old?.active) old.destroy();
+
+    let mark;
+    if (meta.icon && this.textures.exists(meta.icon)) {
+      mark = this.add.image(0, crate.getData('balloon') ? -20 : 0, meta.icon);
+      if (meta.icon === 'torpedo') mark.setDisplaySize(36, 72).setAngle(-90);
+      else mark.setDisplaySize(40, 40);
+    } else {
+      mark = this.add
+        .text(0, crate.getData('balloon') ? -18 : 0, meta.label[lang] || meta.label.ru, {
+          fontFamily: 'Georgia, serif',
+          fontSize: '20px',
+          color: '#fff',
           fontStyle: '700',
           stroke: '#000',
-          strokeThickness: 4,
+          strokeThickness: 5,
         })
-        .setOrigin(0.5)
-        .setDepth(120);
-      this.tweens.add({
-        targets: popup,
-        y: y - 56,
-        alpha: 0,
-        duration: 800,
-        ease: 'Cubic.easeOut',
-        onComplete: () => popup.destroy(),
-      });
+        .setOrigin(0.5);
     }
-    return true;
+    crate.add(mark);
+    crate.setData('scanMark', mark);
+
+    // Прячем «секретную» коробку визуально сильнее — лут поверх
+    if (box?.setAlpha) box.setAlpha(0.35);
   }
 
   endGame(reason) {
@@ -846,9 +1187,10 @@ export class GameScene extends Phaser.Scene {
 
   destroyedMessage() {
     const player = loadPlayer();
-    if (player.lang === 'en') return `SHIP DESTROYED\nScore: ${this.score}`;
-    if (player.lang === 'es') return `BARCO DESTRUIDO\nPuntos: ${this.score}`;
-    return `КОРАБЛЬ УНИЧТОЖЕН\nОчки: ${this.score}`;
+    const timeStr = formatDuration(this.battleTimeMs);
+    if (player.lang === 'en') return `SHIP DESTROYED\nScore: ${this.score}\nTime: ${timeStr}`;
+    if (player.lang === 'es') return `BARCO DESTRUIDO\nPuntos: ${this.score}\nTiempo: ${timeStr}`;
+    return `КОРАБЛЬ УНИЧТОЖЕН\nОчки: ${this.score}\nВремя: ${timeStr}`;
   }
 
   goToMenu() {
@@ -859,7 +1201,7 @@ export class GameScene extends Phaser.Scene {
       this._menuCall = null;
     }
     this.teardownInput();
-    this.scene.start('Menu', { score: this.score });
+    this.scene.start('Menu', { score: this.score, timeMs: this.battleTimeMs });
   }
 
   destroyShip(ship) {
@@ -1025,14 +1367,19 @@ export class GameScene extends Phaser.Scene {
     this.updateSeaWaves(_t, delta);
 
     if (!this.gameOver) {
+      this.battleTimeMs += delta;
+      if (this.timeLabel) this.timeLabel.setText(formatDuration(this.battleTimeMs));
+
       let turn = 0;
       if (this.cursors.left.isDown || this.keys.A.isDown || this.holdLeft) turn -= 1;
       if (this.cursors.right.isDown || this.keys.D.isDown || this.holdRight) turn += 1;
       turn += this.gyro.sample();
-      if (turn) this.setAimX(this.aimTargetX + turn * 280 * (delta / 1000));
+      if (turn) this.nudgeAim(turn * 280 * (delta / 1000));
     }
 
     this.applyAim(delta);
+
+    if (!this.gameOver) this.tickBuffs(delta);
 
     if (this.gameOver) return;
 
@@ -1052,7 +1399,40 @@ export class GameScene extends Phaser.Scene {
 
       ship.x += ship.getData('dir') * ship.getData('speed') * (delta / 1000);
       const foam = ship.getData('foam');
-      if (foam?.active) foam.x = ship.x;
+      if (foam?.active) {
+        foam.x = ship.x;
+        foam.y = ship.y + 2;
+      }
+
+      // След пены за кораблём (пиратский toy-режим — заметнее)
+      if (isPirateTheme(loadPlayer())) {
+        let wakeAcc = (ship.getData('wakeAcc') || 0) + delta;
+        if (wakeAcc > 85) {
+          wakeAcc = 0;
+          const dir = ship.getData('dir');
+          const blob = this.add.ellipse(
+            ship.x - dir * (ship.displayWidth * 0.28 + Phaser.Math.Between(0, 10)),
+            ship.y + 4 + Phaser.Math.Between(-2, 3),
+            Phaser.Math.Between(18, 32),
+            Phaser.Math.Between(7, 12),
+            0xfff6e0,
+            0.55,
+          );
+          blob.setDepth((ship.getData('lane') || 0) + 8);
+          this.world.add(blob);
+          this.tweens.add({
+            targets: blob,
+            alpha: 0,
+            scaleX: 1.7,
+            scaleY: 0.6,
+            x: blob.x - dir * Phaser.Math.Between(28, 50),
+            duration: 780,
+            ease: 'Sine.easeOut',
+            onComplete: () => blob.destroy(),
+          });
+        }
+        ship.setData('wakeAcc', wakeAcc);
+      }
 
       // Оружие: только после времени в видимой зоне
       const weapon = ship.getData('weapon');
@@ -1221,11 +1601,12 @@ export class GameScene extends Phaser.Scene {
 
     let best = null;
     let bestDist = Infinity;
+    const hitMult = this.perks.hitRadiusMult ?? 1;
 
     for (const ship of this.ships.getChildren()) {
       if (!ship.active || !ship.getData('alive')) continue;
       const dist = Math.abs(ship.x - aimX);
-      const half = ship.getData('hitHalf') || ship.displayWidth * 0.35;
+      const half = (ship.getData('hitHalf') || ship.displayWidth * 0.35) * hitMult;
       if (dist <= half && dist < bestDist) {
         best = ship;
         bestDist = dist;
@@ -1233,9 +1614,12 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (best) {
-      const pts = this.pointsForShip(best);
+      const { pts, crit } = this.pointsForShip(best);
       this.spawnHit(best.x, WATERLINE - best.displayHeight * 0.3);
       this.addScore(pts, best.x, WATERLINE - best.displayHeight * 0.5);
+      if (crit) {
+        this.showCratePopup(best.x, WATERLINE - best.displayHeight * 0.75, 'CRIT!', '#ffd27a');
+      }
       const dying = best;
       dying.setData('alive', false);
       dying.setData('hasFired', true);
@@ -1250,6 +1634,9 @@ export class GameScene extends Phaser.Scene {
         },
       });
     } else {
+      if (this.perks.missPenaltyAdd > 0) {
+        this.addScore(-this.perks.missPenaltyAdd, aimX, WATERLINE - 20);
+      }
       const ripple = this.add.ellipse(aimX, WATERLINE, 6, 3, 0xffffff, 0.5);
       ripple.setDepth(40);
       this.tweens.add({

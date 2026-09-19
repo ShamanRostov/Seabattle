@@ -2,6 +2,22 @@ const STORAGE_KEY = 'seabattle_player_v1';
 
 export const LANGS = ['ru', 'en', 'es'];
 
+/** Визуальные режимы: Классика / Пиратская бухта */
+export const THEME_IDS = ['classic', 'pirate'];
+
+export const THEMES = {
+  classic: {
+    id: 'classic',
+    name: { ru: 'Классика', en: 'Classic', es: 'Clásica' },
+    folder: null, // public/assets + public/assets/ui
+  },
+  pirate: {
+    id: 'pirate',
+    name: { ru: 'Пиратская бухта', en: 'Pirate Cove', es: 'Cala Pirata' },
+    folder: 'pirate',
+  },
+};
+
 export const GAME_TITLE = {
   ru: 'Морской бой',
   en: 'Sea Battle',
@@ -65,6 +81,7 @@ export const STR = {
   colPlace: { ru: 'Место', en: 'Rank', es: 'Puesto' },
   colPlayer: { ru: 'Игрок', en: 'Player', es: 'Jugador' },
   colScore: { ru: 'Очки', en: 'Score', es: 'Puntos' },
+  colTime: { ru: 'Время', en: 'Time', es: 'Tiempo' },
   sightBought: { ru: 'Прицел куплен', en: 'Sight purchased', es: 'Mira comprada' },
   sightEquipped: { ru: 'Прицел надет', en: 'Sight equipped', es: 'Mira equipada' },
   daily: { ru: 'День', en: 'Daily', es: 'Día' },
@@ -75,6 +92,7 @@ export const STR = {
   off: { ru: 'ВЫКЛ', en: 'OFF', es: 'NO' },
   you: { ru: 'Вы', en: 'You', es: 'Tú' },
   runScore: { ru: 'Бой', en: 'Run', es: 'Partida' },
+  runTime: { ru: 'Время', en: 'Time', es: 'Tiempo' },
   tagDeal: { ru: 'Выгодно', en: 'Deal', es: 'Oferta' },
   tagTop: { ru: 'Топ', en: 'Best', es: 'Top' },
   free: { ru: 'бесплатно', en: 'free', es: 'gratis' },
@@ -85,67 +103,226 @@ export const STR = {
   save: { ru: 'Сохранить', en: 'Save', es: 'Guardar' },
   cancel: { ru: 'Отмена', en: 'Cancel', es: 'Cancelar' },
   namePlaceholder: { ru: 'Ваше имя', en: 'Your name', es: 'Tu nombre' },
+  visualMode: { ru: 'Визуал', en: 'Visual', es: 'Visual' },
+  themeClassic: { ru: 'Классика', en: 'Classic', es: 'Clásica' },
+  themePirate: { ru: 'Пиратская бухта', en: 'Pirate Cove', es: 'Cala Pirata' },
 };
 
-export const PORTRAITS = [
+export const PORTRAITS_CLASSIC = [
   {
     id: 'default',
     name: { ru: 'Юнга', en: 'Cadet', es: 'Grumete' },
     price: 0,
     texture: 'portrait-default',
+    perk: {},
+    perkText: {
+      ru: 'Без бонусов и штрафов',
+      en: 'No bonuses or penalties',
+      es: 'Sin bonificaciones ni penalizaciones',
+    },
   },
   {
     id: 'captain',
     name: { ru: 'Капитан', en: 'Captain', es: 'Capitán' },
     price: 120,
     texture: 'portrait-captain',
+    perk: { bonusStartLife: 1, shotPenaltyAdd: 5 },
+    perkText: {
+      ru: 'Старт с 6 жизнями вместо 5\nКаждый выстрел: −25 очков (обычно −20)',
+      en: 'Start with 6 lives instead of 5\nEach shot: −25 pts (normally −20)',
+      es: 'Empieza con 6 vidas en vez de 5\nCada disparo: −25 pts (normal −20)',
+    },
   },
   {
     id: 'officer',
     name: { ru: 'Офицер', en: 'Officer', es: 'Oficial' },
     price: 150,
     texture: 'portrait-officer',
+    perk: { shotPenaltyMult: 0.75, sharkEatMult: 0.7 },
+    perkText: {
+      ru: 'Выстрел: −15 очков вместо −20\nАкула ест сундук на 30% реже',
+      en: 'Shot cost: −15 pts instead of −20\nShark eats crates 30% less often',
+      es: 'Disparo: −15 pts en vez de −20\nTiburón 30% menos frecuente',
+    },
   },
   {
     id: 'pirate',
     name: { ru: 'Корсар', en: 'Corsair', es: 'Corsario' },
     price: 180,
     texture: 'portrait-pirate',
+    perk: {
+      scoreByShip: { 'ship-war': 1.15, 'ship-sub': 1.2, 'ship-cargo': 0.9, 'ship-container': 0.9 },
+      badLootSaveChance: 0.3,
+    },
+    perkText: {
+      ru: 'Военный корабль: +15% очков\nПодлодка: +20% очков\nТорговый / контейнер: −10% очков\n30% шанс отменить ром или ÷1.5 из сундука',
+      en: 'Warship: +15% score\nSub: +20% score\nCargo / container: −10% score\n30% chance to cancel rum or ÷1.5 from crate',
+      es: 'Barco de guerra: +15% puntos\nSubmarino: +20% puntos\nMercante / contenedor: −10%\n30% anular ron o ÷1.5 del cofre',
+    },
   },
 ];
 
-export const SIGHTS = [
+export const PORTRAITS_PIRATE = [
+  {
+    id: 'cabin',
+    name: { ru: 'Юнга', en: 'Cabin Boy', es: 'Grumete' },
+    price: 0,
+    texture: 'portrait-cabin',
+    perk: {},
+    perkText: {
+      ru: 'Без бонусов и штрафов',
+      en: 'No bonuses or penalties',
+      es: 'Sin bonificaciones ni penalizaciones',
+    },
+  },
+  {
+    id: 'pcap',
+    name: { ru: 'Капитан', en: 'Captain', es: 'Capitán' },
+    price: 120,
+    texture: 'portrait-pcap',
+    perk: { bonusStartLife: 1, shotPenaltyAdd: 5 },
+    perkText: {
+      ru: 'Старт с 6 жизнями вместо 5\nКаждый выстрел: −25 очков (обычно −20)',
+      en: 'Start with 6 lives instead of 5\nEach shot: −25 pts (normally −20)',
+      es: 'Empieza con 6 vidas en vez de 5\nCada disparo: −25 pts (normal −20)',
+    },
+  },
+  {
+    id: 'poff',
+    name: { ru: 'Боцман', en: 'Boatswain', es: 'Contramaestre' },
+    price: 150,
+    texture: 'portrait-poff',
+    perk: { shotPenaltyMult: 0.75, sharkEatMult: 0.7 },
+    perkText: {
+      ru: 'Выстрел: −15 очков вместо −20\nАкула ест сундук на 30% реже',
+      en: 'Shot cost: −15 pts instead of −20\nShark eats crates 30% less often',
+      es: 'Disparo: −15 pts en vez de −20\nTiburón 30% menos frecuente',
+    },
+  },
+  {
+    id: 'pcorsair',
+    name: { ru: 'Корсар', en: 'Corsair', es: 'Corsario' },
+    price: 180,
+    texture: 'portrait-pcorsair',
+    perk: {
+      scoreByShip: { 'ship-war': 1.15, 'ship-sub': 1.2, 'ship-cargo': 0.9, 'ship-container': 0.9 },
+      badLootSaveChance: 0.3,
+    },
+    perkText: {
+      ru: 'Военный корабль: +15% очков\nПодлодка: +20% очков\nТорговый / контейнер: −10% очков\n30% шанс отменить ром или ÷1.5 из сундука',
+      en: 'Warship: +15% score\nSub: +20% score\nCargo / container: −10% score\n30% chance to cancel rum or ÷1.5 from crate',
+      es: 'Barco de guerra: +15% puntos\nSubmarino: +20% puntos\nMercante / contenedor: −10%\n30% anular ron o ÷1.5 del cofre',
+    },
+  },
+];
+
+/** @deprecated use getPortraits(state) */
+export const PORTRAITS = PORTRAITS_CLASSIC;
+
+export const SIGHTS_CLASSIC = [
   {
     id: 'classic',
     name: { ru: 'Классика', en: 'Classic', es: 'Clásica' },
     price: 0,
     texture: 'sight-classic',
+    perk: {},
+    perkText: {
+      ru: 'Без бонусов и штрафов',
+      en: 'No bonuses or penalties',
+      es: 'Sin bonificaciones ni penalizaciones',
+    },
   },
   {
     id: 'holo',
     name: { ru: 'Голограф', en: 'Holo', es: 'Holo' },
     price: 40,
     texture: 'sight-holo',
+    perk: { scanCrate: true, hitRadiusMult: 0.9 },
+    perkText: {
+      ru: 'При наведении показывает, что в сундуке\nПопадание по кораблям −10%',
+      en: 'Aiming at a crate reveals its loot\nShip hitbox −10%',
+      es: 'Al apuntar al cofre revela el botín\nAcierto en barcos −10%',
+    },
   },
   {
     id: 'brass',
     name: { ru: 'Латунь', en: 'Brass', es: 'Latón' },
     price: 60,
     texture: 'sight-brass',
+    perk: { hitRadiusMult: 1.12, missPenaltyAdd: 8 },
+    perkText: {
+      ru: 'Попадание по кораблям +12%\nПромах по воде: дополнительно −8 очков',
+      en: 'Ship hitbox +12%\nWater miss: extra −8 pts',
+      es: 'Acierto en barcos +12%\nFallo al agua: −8 pts extra',
+    },
   },
   {
     id: 'diamond',
     name: { ru: 'Ромб', en: 'Diamond', es: 'Rombo' },
     price: 80,
     texture: 'sight-diamond',
+    perk: { critChance: 0.18, critMult: 1.5, missPenaltyAdd: 10 },
+    perkText: {
+      ru: '18% шанс крита: очки за корабль ×1.5\nПромах по воде: дополнительно −10 очков',
+      en: '18% crit chance: ship score ×1.5\nWater miss: extra −10 pts',
+      es: '18% crítico: puntos del barco ×1.5\nFallo al agua: −10 pts extra',
+    },
   },
   {
     id: 'minimal',
     name: { ru: 'Минимал', en: 'Minimal', es: 'Minimal' },
     price: 50,
     texture: 'sight-minimal',
+    perk: { hitRadiusMult: 1.14, crateHitMult: 0.75 },
+    perkText: {
+      ru: 'Попадание по кораблям +14%\nЗона попадания по сундуку −25%',
+      en: 'Ship hitbox +14%\nCrate hit zone −25%',
+      es: 'Acierto en barcos +14%\nZona del cofre −25%',
+    },
   },
 ];
+
+export const SIGHTS_PIRATE = [
+  {
+    id: 'spyglass',
+    name: { ru: 'Подзорная', en: 'Spyglass', es: 'Catalejo' },
+    price: 0,
+    texture: 'sight-spyglass',
+    perk: {},
+    perkText: {
+      ru: 'Без бонусов и штрафов',
+      en: 'No bonuses or penalties',
+      es: 'Sin bonificaciones ni penalizaciones',
+    },
+  },
+  {
+    id: 'wood',
+    name: { ru: 'Дубовая', en: 'Oak', es: 'Roble' },
+    price: 45,
+    texture: 'sight-wood',
+    perk: { hitRadiusMult: 1.12, missPenaltyAdd: 8 },
+    perkText: {
+      ru: 'Попадание по кораблям +12%\nПромах по воде: дополнительно −8 очков',
+      en: 'Ship hitbox +12%\nWater miss: extra −8 pts',
+      es: 'Acierto en barcos +12%\nFallo al agua: −8 pts extra',
+    },
+  },
+  {
+    id: 'jolly',
+    name: { ru: 'Весёлый Роджер', en: 'Jolly Roger', es: 'Jolly Roger' },
+    price: 90,
+    texture: 'sight-jolly',
+    perk: { echoShot: true, echoCooldownMs: 4500, echoSpread: 32, hitRadiusMult: 0.88 },
+    perkText: {
+      ru: 'Каждые 4.5 с: второе ядро рядом с прицелом\nПопадание по кораблям −12%',
+      en: 'Every 4.5s: second shot near the reticle\nShip hitbox −12%',
+      es: 'Cada 4.5s: segundo disparo junto a la mira\nAcierto en barcos −12%',
+    },
+  },
+];
+
+/** @deprecated use getSights(state) */
+export const SIGHTS = SIGHTS_CLASSIC;
 
 export const ANCHOR_PACKS = [
   { id: 'pack_s', anchors: 50, priceLabel: { ru: '99 ₽', en: '$1.49', es: '1,49 €' } },
@@ -171,10 +348,11 @@ const defaultState = () => ({
   nameSetFree: false,
   anchors: 80,
   careerScore: 0,
+  visualTheme: 'classic',
   equippedSight: 'classic',
-  ownedSights: ['classic'],
+  ownedSights: ['classic', 'spyglass'],
   equippedPortrait: 'default',
-  ownedPortraits: ['default'],
+  ownedPortraits: ['default', 'cabin'],
   soundOn: true,
   lang: 'ru',
   daily: {}, // { 'YYYY-MM-DD': bestScoreThatDay }
@@ -192,11 +370,48 @@ function monthKey() {
 export function getMonthlyScore(state, month = monthKey()) {
   return Object.entries(state.daily || {})
     .filter(([day]) => day.startsWith(month))
-    .reduce((sum, [, best]) => sum + (Number(best) || 0), 0);
+    .reduce((sum, [, entry]) => sum + dayScore(entry), 0);
+}
+
+export function getMonthlyTime(state, month = monthKey()) {
+  return Object.entries(state.daily || {})
+    .filter(([day]) => day.startsWith(month))
+    .reduce((sum, [, entry]) => sum + dayTime(entry), 0);
 }
 
 export function getDailyScore(state, day = todayKey()) {
-  return state.daily?.[day] || 0;
+  return dayScore(state.daily?.[day]);
+}
+
+export function getDailyTime(state, day = todayKey()) {
+  return dayTime(state.daily?.[day]);
+}
+
+function dayScore(entry) {
+  if (entry == null) return 0;
+  if (typeof entry === 'number') return entry;
+  return Number(entry.score) || 0;
+}
+
+function dayTime(entry) {
+  if (entry == null || typeof entry === 'number') return 0;
+  return Number(entry.timeMs) || 0;
+}
+
+/** mm:ss */
+export function formatDuration(ms) {
+  const totalSec = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function isBetterRun(score, timeMs, prevEntry) {
+  const prevScore = dayScore(prevEntry);
+  const prevTime = dayTime(prevEntry);
+  if (score > prevScore) return true;
+  if (score < prevScore) return false;
+  return timeMs > prevTime;
 }
 
 export function loadPlayer() {
@@ -205,13 +420,20 @@ export function loadPlayer() {
     if (!raw) return defaultState();
     const parsed = { ...defaultState(), ...JSON.parse(raw) };
     if (!LANGS.includes(parsed.lang)) parsed.lang = 'ru';
+    if (!THEME_IDS.includes(parsed.visualTheme)) parsed.visualTheme = 'classic';
     if (!Array.isArray(parsed.ownedPortraits) || !parsed.ownedPortraits.length) {
-      parsed.ownedPortraits = ['default'];
+      parsed.ownedPortraits = ['default', 'cabin'];
     }
+    if (!parsed.ownedPortraits.includes('cabin')) parsed.ownedPortraits.push('cabin');
+    if (!parsed.ownedPortraits.includes('default')) parsed.ownedPortraits.push('default');
     if (!parsed.equippedPortrait) parsed.equippedPortrait = 'default';
     if (!Array.isArray(parsed.ownedSights) || !parsed.ownedSights.length) {
-      parsed.ownedSights = ['classic'];
+      parsed.ownedSights = ['classic', 'spyglass'];
     }
+    if (!parsed.ownedSights.includes('spyglass')) parsed.ownedSights.push('spyglass');
+    if (!parsed.ownedSights.includes('classic')) parsed.ownedSights.push('classic');
+    ensureThemeSight(parsed);
+    ensureThemePortrait(parsed);
     return parsed;
   } catch {
     return defaultState();
@@ -238,14 +460,22 @@ export function getRank(careerScore) {
   return rank;
 }
 
-export function submitRunScore(state, score) {
+export function submitRunScore(state, score, timeMs = 0) {
   const next = { ...state };
-  next.careerScore = (next.careerScore || 0) + score;
+  const safeScore = Math.max(0, Math.floor(Number(score) || 0));
+  const safeTime = Math.max(0, Math.floor(Number(timeMs) || 0));
+  next.careerScore = (next.careerScore || 0) + safeScore;
   const d = todayKey();
-  // день — только лучший результат
-  next.daily = { ...next.daily, [d]: Math.max(next.daily?.[d] || 0, score) };
-  // якоря за бой: 1 за каждые 200 очков
-  const earned = Math.floor(score / 200);
+  const prev = next.daily?.[d];
+  const daily = { ...(next.daily || {}) };
+  if (isBetterRun(safeScore, safeTime, prev)) {
+    daily[d] = { score: safeScore, timeMs: safeTime };
+  } else if (typeof prev === 'number') {
+    // миграция старого формата
+    daily[d] = { score: prev, timeMs: 0 };
+  }
+  next.daily = daily;
+  const earned = Math.floor(safeScore / 200);
   next.anchors = (next.anchors || 0) + earned;
   savePlayer(next);
   return { state: next, earnedAnchors: earned };
@@ -260,24 +490,36 @@ export function tryStartGame(state) {
 
 export function buildLeaderboard(state, mode = 'daily') {
   const bots = [
-    { name: 'Neptun', daily: 420, monthly: 3100 },
-    { name: 'Sever', daily: 880, monthly: 5400 },
-    { name: 'Orion', daily: 150, monthly: 1200 },
-    { name: 'Volk', daily: 1200, monthly: 8900 },
-    { name: 'Baltika', daily: 640, monthly: 4100 },
-    { name: 'Tuman', daily: 300, monthly: 2200 },
-    { name: 'Skat', daily: 990, monthly: 7000 },
+    { name: 'Neptun', daily: 420, monthly: 3100, dailyTime: 95000, monthlyTime: 620000 },
+    { name: 'Sever', daily: 880, monthly: 5400, dailyTime: 140000, monthlyTime: 910000 },
+    { name: 'Orion', daily: 150, monthly: 1200, dailyTime: 48000, monthlyTime: 310000 },
+    { name: 'Volk', daily: 1200, monthly: 8900, dailyTime: 210000, monthlyTime: 1200000 },
+    { name: 'Baltika', daily: 640, monthly: 4100, dailyTime: 110000, monthlyTime: 780000 },
+    { name: 'Tuman', daily: 300, monthly: 2200, dailyTime: 72000, monthlyTime: 450000 },
+    { name: 'Skat', daily: 990, monthly: 7000, dailyTime: 175000, monthlyTime: 1050000 },
+    { name: 'Krab', daily: 520, monthly: 3600, dailyTime: 88000, monthlyTime: 560000 },
+    { name: 'Parus', daily: 210, monthly: 1800, dailyTime: 55000, monthlyTime: 380000 },
+    { name: 'Flot', daily: 1050, monthly: 7600, dailyTime: 190000, monthlyTime: 1120000 },
+    { name: 'Rif', daily: 80, monthly: 900, dailyTime: 32000, monthlyTime: 240000 },
+    { name: 'Mayak', daily: 450, monthly: 2900, dailyTime: 80000, monthlyTime: 500000 },
+    { name: 'Latun', daily: 710, monthly: 4800, dailyTime: 125000, monthlyTime: 820000 },
+    { name: 'Burun', daily: 340, monthly: 2500, dailyTime: 68000, monthlyTime: 420000 },
   ];
   const meName = state.name || t(state, 'you');
   const myScore = mode === 'daily' ? getDailyScore(state) : getMonthlyScore(state);
+  const myTime = mode === 'daily' ? getDailyTime(state) : getMonthlyTime(state);
 
   const rows = bots.map((b) => ({
     name: b.name,
     score: mode === 'daily' ? b.daily : b.monthly,
+    timeMs: mode === 'daily' ? b.dailyTime : b.monthlyTime,
     me: false,
   }));
-  rows.push({ name: meName, score: myScore, me: true });
-  rows.sort((a, b) => b.score - a.score);
+  rows.push({ name: meName, score: myScore, timeMs: myTime, me: true });
+  rows.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return (b.timeMs || 0) - (a.timeMs || 0);
+  });
   return rows.map((r, i) => ({ ...r, place: i + 1 }));
 }
 
@@ -308,5 +550,176 @@ export function rankName(state, rank) {
 }
 
 export function getPortrait(state) {
-  return PORTRAITS.find((p) => p.id === state.equippedPortrait) || PORTRAITS[0];
+  const list = getPortraits(state);
+  return list.find((p) => p.id === state.equippedPortrait) || list[0];
+}
+
+export function getPortraits(state) {
+  return getThemeId(state) === 'pirate' ? PORTRAITS_PIRATE : PORTRAITS_CLASSIC;
+}
+
+export function ensureThemePortrait(state) {
+  const list = getPortraits(state);
+  const ok = list.some((p) => p.id === state.equippedPortrait);
+  if (!ok) state.equippedPortrait = list[0].id;
+  if (!state.ownedPortraits.includes(list[0].id)) {
+    state.ownedPortraits.push(list[0].id);
+  }
+  return state;
+}
+
+export function getThemeId(state) {
+  return THEME_IDS.includes(state?.visualTheme) ? state.visualTheme : 'classic';
+}
+
+export function isPirateTheme(state) {
+  return getThemeId(state) === 'pirate';
+}
+
+export function getSights(state) {
+  return getThemeId(state) === 'pirate' ? SIGHTS_PIRATE : SIGHTS_CLASSIC;
+}
+
+export function getEquippedSight(state) {
+  const list = getSights(state);
+  return list.find((s) => s.id === state.equippedSight) || list[0];
+}
+
+/**
+ * Перки лоадаута на бой.
+ * Аватары: жизни, цена выстрела, акула, очки за типы кораблей, защита от плохого лута.
+ * Прицелы: скан сундука, хитбокс, крит, эхо-выстрел, штраф за промах.
+ * Оси не пересекаются — значения просто складываются/умножаются без конфликтов.
+ */
+export function getLoadoutPerks(state) {
+  const sight = getEquippedSight(state)?.perk || {};
+  const avatar = getPortrait(state)?.perk || {};
+  return {
+    // avatar
+    bonusStartLife: avatar.bonusStartLife || 0,
+    shotPenaltyMult: avatar.shotPenaltyMult ?? 1,
+    shotPenaltyAdd: avatar.shotPenaltyAdd || 0,
+    sharkEatMult: avatar.sharkEatMult ?? 1,
+    badLootSaveChance: avatar.badLootSaveChance || 0,
+    scoreByShip: { ...(avatar.scoreByShip || {}) },
+    // sight
+    scanCrate: !!sight.scanCrate,
+    hitRadiusMult: sight.hitRadiusMult ?? 1,
+    crateHitMult: sight.crateHitMult ?? 1,
+    missPenaltyAdd: sight.missPenaltyAdd || 0,
+    critChance: sight.critChance || 0,
+    critMult: sight.critMult || 1,
+    echoShot: !!sight.echoShot,
+    echoCooldownMs: sight.echoCooldownMs || 4500,
+    echoSpread: sight.echoSpread || 32,
+  };
+}
+
+export function perkText(state, item) {
+  if (!item?.perkText) return '';
+  return item.perkText[state.lang] || item.perkText.ru || '';
+}
+
+export const CRATE_LOOT_META = {
+  life: {
+    tint: 0xff6b81,
+    label: { ru: '+♥', en: '+♥', es: '+♥' },
+    icon: null,
+  },
+  score2: {
+    tint: 0xffd27a,
+    label: { ru: 'x2', en: 'x2', es: 'x2' },
+    icon: 'icon-anchor',
+  },
+  scoreDown: {
+    tint: 0xff5555,
+    label: { ru: '÷1.5', en: '÷1.5', es: '÷1.5' },
+    icon: null,
+  },
+  triple: {
+    tint: 0x7ad0ff,
+    label: { ru: 'x3', en: 'x3', es: 'x3' },
+    icon: 'torpedo',
+  },
+  rum: {
+    tint: 0xe8a0ff,
+    label: { ru: 'РОМ', en: 'RUM', es: 'RON' },
+    icon: null,
+  },
+};
+
+/** Если текущий прицел не из выбранного визуала — надеть бесплатный темы */
+export function ensureThemeSight(state) {
+  const list = getSights(state);
+  const ok = list.some((s) => s.id === state.equippedSight);
+  if (!ok) {
+    state.equippedSight = list[0].id;
+  }
+  if (!state.ownedSights.includes(list[0].id)) {
+    state.ownedSights.push(list[0].id);
+  }
+  return state;
+}
+
+export function setVisualTheme(state, themeId) {
+  if (!THEME_IDS.includes(themeId)) return state;
+  const next = { ...state, visualTheme: themeId };
+  ensureThemeSight(next);
+  ensureThemePortrait(next);
+  savePlayer(next);
+  return next;
+}
+
+/** Пути ассетов боя/меню для BootScene */
+export function getThemeAssetPaths(themeId) {
+  const theme = THEME_IDS.includes(themeId) ? themeId : 'classic';
+  if (theme === 'pirate') {
+    const base = 'assets/pirate';
+    return {
+      sea: `${base}/sea.jpg`,
+      'ship-cargo': `${base}/ship-cargo.png`,
+      'ship-container': `${base}/ship-container.png`,
+      'ship-war': `${base}/ship-war.png`,
+      'ship-sub': `${base}/ship-sub.png`,
+      explosion: `${base}/explosion.png`,
+      torpedo: `${base}/torpedo.png`,
+      shark: `${base}/shark.png`,
+      'icon-anchor': `${base}/icon-anchor.png`,
+      crate: `${base}/crate.png`,
+      'balloon-crate': `${base}/balloon-crate.png`,
+      'menu-bg': `${base}/menu-bg.jpg`,
+      'btn-wood': `${base}/btn-wood.png`,
+      'btn-battle': `${base}/btn-battle.png`,
+      panel: `${base}/panel.png`,
+      'sight-spyglass': `${base}/sight-spyglass.png`,
+      'sight-wood': `${base}/sight-wood.png`,
+      'sight-jolly': `${base}/sight-jolly.png`,
+      'portrait-cabin': `${base}/portrait-cabin.png`,
+      'portrait-pcap': `${base}/portrait-pcap.png`,
+      'portrait-poff': `${base}/portrait-poff.png`,
+      'portrait-pcorsair': `${base}/portrait-pcorsair.png`,
+      prepared: false,
+    };
+  }
+  return {
+    sea: 'assets/sea.png',
+    'ship-cargo': 'assets/ship-cargo.png',
+    'ship-container': 'assets/ship-container.png',
+    'ship-war': 'assets/ship-war.png',
+    'ship-sub': 'assets/ship-sub.png',
+    explosion: 'assets/explosion.png',
+    torpedo: 'assets/torpedo.png',
+    shark: 'assets/ui/shark.png',
+    'icon-anchor': 'assets/ui/icon-anchor.png',
+    'sight-classic': 'assets/ui/sight-classic.png',
+    'sight-holo': 'assets/ui/sight-holo.png',
+    'sight-brass': 'assets/ui/sight-brass.png',
+    'sight-diamond': 'assets/ui/sight-diamond.png',
+    'sight-minimal': 'assets/ui/sight-minimal.png',
+    'portrait-default': 'assets/ui/portrait-default.png',
+    'portrait-captain': 'assets/ui/portrait-captain.png',
+    'portrait-officer': 'assets/ui/portrait-officer.png',
+    'portrait-pirate': 'assets/ui/portrait-pirate.png',
+    prepared: true,
+  };
 }
