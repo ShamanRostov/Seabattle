@@ -205,13 +205,19 @@ export const PORTRAITS_PIRATE = [
     price: 180,
     texture: 'portrait-pcorsair',
     perk: {
-      scoreByShip: { 'ship-war': 1.15, 'ship-sub': 1.2, 'ship-cargo': 0.9, 'ship-container': 0.9 },
+      scoreByShip: {
+        'ship-war': 1.15,
+        'ship-sub': 1.2,
+        'ship-brig': 1.25,
+        'ship-cargo': 0.9,
+        'ship-container': 0.9,
+      },
       badLootSaveChance: 0.3,
     },
     perkText: {
-      ru: 'Военный корабль: +15% очков\nПодлодка: +20% очков\nТорговый / контейнер: −10% очков\n30% шанс отменить ром или ÷1.5 из сундука',
-      en: 'Warship: +15% score\nSub: +20% score\nCargo / container: −10% score\n30% chance to cancel rum or ÷1.5 from crate',
-      es: 'Barco de guerra: +15% puntos\nSubmarino: +20% puntos\nMercante / contenedor: −10%\n30% anular ron o ÷1.5 del cofre',
+      ru: 'Бриг: +25% очков\nВоенный: +15% / подлодка: +20%\nТорговый / контейнер: −10%\n30% шанс отменить ром или ÷1.5 из сундука',
+      en: 'Brig: +25% score\nWarship: +15% / sub: +20%\nCargo / container: −10%\n30% chance to cancel rum or ÷1.5 from crate',
+      es: 'Bergantín: +25%\nGuerra: +15% / sub: +20%\nMercante / contenedor: −10%\n30% anular ron o ÷1.5 del cofre',
     },
   },
 ];
@@ -627,9 +633,9 @@ export const CRATE_LOOT_META = {
     icon: null,
   },
   score2: {
-    tint: 0xffd27a,
+    tint: 0x7cff9a,
     label: { ru: 'x2', en: 'x2', es: 'x2' },
-    icon: 'icon-anchor',
+    icon: null,
   },
   scoreDown: {
     tint: 0xff5555,
@@ -646,7 +652,36 @@ export const CRATE_LOOT_META = {
     label: { ru: 'РОМ', en: 'RUM', es: 'RON' },
     icon: null,
   },
+  /** Редкий: +N якорей на баланс */
+  anchors: {
+    tint: 0xffd27a,
+    label: { ru: '+⚓', en: '+⚓', es: '+⚓' },
+    icon: 'icon-anchor',
+  },
 };
+
+export const CRATE_ANCHOR_BONUS = 10;
+
+/** Веса лута сундука (якоря — очень редко, ~2%) */
+const CRATE_LOOT_WEIGHTS = [
+  { id: 'life', w: 23 },
+  { id: 'score2', w: 22 },
+  { id: 'scoreDown', w: 22 },
+  { id: 'triple', w: 18 },
+  { id: 'rum', w: 13 },
+  { id: 'anchors', w: 2 },
+];
+
+export function pickCrateLoot(exclude = []) {
+  const pool = CRATE_LOOT_WEIGHTS.filter((row) => !exclude.includes(row.id));
+  const total = pool.reduce((s, row) => s + row.w, 0);
+  let roll = Math.random() * total;
+  for (const row of pool) {
+    roll -= row.w;
+    if (roll <= 0) return row.id;
+  }
+  return pool[pool.length - 1]?.id || 'life';
+}
 
 /** Если текущий прицел не из выбранного визуала — надеть бесплатный темы */
 export function ensureThemeSight(state) {
@@ -681,6 +716,7 @@ export function getThemeAssetPaths(themeId) {
       'ship-container': `${base}/ship-container.png`,
       'ship-war': `${base}/ship-war.png`,
       'ship-sub': `${base}/ship-sub.png`,
+      'ship-brig': `${base}/ship-brig.png`,
       explosion: `${base}/explosion.png`,
       torpedo: `${base}/torpedo.png`,
       shark: `${base}/shark.png`,

@@ -231,7 +231,7 @@ export class BootScene extends Phaser.Scene {
       if (skipKeys.has(key) || typeof url !== 'string') return;
       // Сброс старого ключа при смене визуала (classic ↔ pirate)
       if (this.textures.exists(key)) this.textures.remove(key);
-      this.load.image(key, `${url}?v=pirate-ui8`);
+      this.load.image(key, `${url}?v=pirate-side1`);
     });
   }
 
@@ -249,6 +249,7 @@ export class BootScene extends Phaser.Scene {
         'ship-container',
         'ship-war',
         'ship-sub',
+        'ship-brig',
         'torpedo',
         'explosion',
         'shark',

@@ -2,10 +2,13 @@ import Phaser from 'phaser';
 import { createGyroAim } from '../input/gyro.js';
 import {
   loadPlayer,
+  savePlayer,
   getEquippedSight,
   isPirateTheme,
   getLoadoutPerks,
   CRATE_LOOT_META,
+  CRATE_ANCHOR_BONUS,
+  pickCrateLoot,
   formatDuration,
 } from '../data/playerStore.js';
 
@@ -26,8 +29,6 @@ const CRATE_FALL_MS = 3800;
 const SHARK_EAT_CHANCE = 0.34;
 /** Длительность временных баффов из сундука */
 const CRATE_BUFF_MS = 10000;
-/** Содержимое сундука (вид всегда один и тот же) */
-const CRATE_LOOT = ['life', 'score2', 'scoreDown', 'triple', 'rum'];
 const TRIPLE_SPREAD = 38;
 
 /**
@@ -41,6 +42,7 @@ const SHIP_SCORE = {
   'ship-cargo': 100, // торговый — проще
   'ship-container': 120, // контейнеровоз (объёмный стиль)
   'ship-war': 250, // военный стреляет
+  'ship-brig': 320, // пиратский бриг — опаснее военного
   'ship-sub': 400, // лодка — быстрее / опаснее
 };
 const LANE_BONUS = [80, 50, 25, 0]; // далеко → близко
@@ -88,7 +90,7 @@ export class GameScene extends Phaser.Scene {
     this.spawnShip(160, 1, 'ship-cargo');
     this.spawnShip(420, -1, 'ship-container');
     this.spawnShip(680, 1, 'ship-war');
-    this.spawnShip(860, -1, 'ship-sub');
+    this.spawnShip(860, -1, isPirateTheme(this.playerState) ? 'ship-brig' : 'ship-sub');
 
     this.drawFrame();
     this.drawReticle();
@@ -116,7 +118,7 @@ export class GameScene extends Phaser.Scene {
 
   drawSea() {
     const pirate = isPirateTheme(loadPlayer());
-    // Пиратское toy-море: горизонт чуть ниже, чтобы изометрические корпуса сидели в воде
+    // Пиратское toy-море: горизонт чуть ниже, чтобы корпуса сидели в воде
     const horizonT = pirate ? 0.52 : SEA_HORIZON_T;
     const bg = this.add.image(W / 2, H / 2 + (WATERLINE - H * horizonT), 'sea');
     bg.setDisplaySize(W * (pirate ? 1.2 : 1.15), H * (pirate ? 1.28 : 1.2));
@@ -198,19 +200,35 @@ export class GameScene extends Phaser.Scene {
     // 0 = далеко у горизонта, 3 = близко к игроку
     const lane = Phaser.Math.Between(0, 3);
     const y = WATERLINE - 8 + lane * 16;
+    const pirate = isPirateTheme(this.playerState || loadPlayer());
     const roll = Math.random();
-    const key =
-      forcedKey ||
-      (roll < 0.28
-        ? 'ship-cargo'
-        : roll < 0.52
-          ? 'ship-container'
-          : roll < 0.78
-            ? 'ship-war'
-            : 'ship-sub');
+    let key = forcedKey;
+    if (!key) {
+      if (pirate) {
+        // cargo 26% / container 22% / war 22% / brig 14% / sub 16%
+        key =
+          roll < 0.26
+            ? 'ship-cargo'
+            : roll < 0.48
+              ? 'ship-container'
+              : roll < 0.7
+                ? 'ship-war'
+                : roll < 0.84
+                  ? 'ship-brig'
+                  : 'ship-sub';
+      } else {
+        key =
+          roll < 0.28
+            ? 'ship-cargo'
+            : roll < 0.52
+              ? 'ship-container'
+              : roll < 0.78
+                ? 'ship-war'
+                : 'ship-sub';
+      }
+    }
 
     const foamW = 70 + lane * 18;
-    const pirate = isPirateTheme(loadPlayer());
     const foam = this.add.ellipse(
       x,
       y + 2,
@@ -224,24 +242,28 @@ export class GameScene extends Phaser.Scene {
     const ship = this.add.image(x, y, key);
     ship.setOrigin(0.5, 0.98);
     const sizeMul =
-      (key === 'ship-sub' ? 0.82 : key === 'ship-container' ? 1.08 : 1) * (pirate ? 1.35 : 1);
+      (key === 'ship-sub' ? 0.82 : key === 'ship-container' ? 1.08 : key === 'ship-brig' ? 1.12 : 1) *
+      (pirate ? 1.35 : 1);
     const targetW = (85 + lane * 32 + Phaser.Math.Between(-8, 12)) * sizeMul;
     ship.setScale(targetW / Math.max(1, ship.width));
     this.applyShipFacing(ship, key, dir);
     ship.setDepth(10 + lane);
     foam.setDepth(9 + lane);
 
-    const base = 12 + lane * 14 + (key === 'ship-sub' ? 8 : 0);
+    const base = 12 + lane * 14 + (key === 'ship-sub' ? 8 : key === 'ship-brig' ? 4 : 0);
     const speed = base + Math.random() * (16 + lane * 10);
 
     // Развороты: почти каждый корабль хотя бы раз, пока ещё на экране
     const turnsLeft = Math.random() < 0.85 ? Phaser.Math.Between(1, 2) : 0;
     const turnIn = turnsLeft > 0 ? Phaser.Math.Between(2800, 7000) : 999999;
 
-    const canFireTorpedo = key === 'ship-war' || key === 'ship-sub';
+    const canFireTorpedo = key === 'ship-war' || key === 'ship-sub' || key === 'ship-brig';
     // Иногда грузовой запускает ракету (не раньше 3 сек в кадре)
     const mayLaunchMissile =
       (key === 'ship-cargo' || key === 'ship-container') && Math.random() < 0.32;
+
+    const fireLo = key === 'ship-sub' ? 1500 : key === 'ship-brig' ? 1800 : 2000;
+    const fireHi = key === 'ship-sub' ? 4000 : key === 'ship-brig' ? 4500 : 5000;
 
     ship.setData({
       dir,
@@ -256,7 +278,7 @@ export class GameScene extends Phaser.Scene {
       turnsLeft,
       visibleMs: 0,
       fireAfterMs: canFireTorpedo
-        ? Phaser.Math.Between(key === 'ship-sub' ? 1500 : 2000, key === 'ship-sub' ? 4000 : 5000)
+        ? Phaser.Math.Between(fireLo, fireHi)
         : mayLaunchMissile
           ? Phaser.Math.Between(3000, 6500)
           : 0,
@@ -268,7 +290,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   applyShipFacing(ship, key, dir) {
-    // Пиратские изометрические спрайты: нос у всех влево-вниз → flip при движении вправо
+    // Пиратские боковые спрайты: нос влево → flip при движении вправо
     if (isPirateTheme(loadPlayer())) {
       ship.setFlipX(dir > 0);
       return;
@@ -284,7 +306,7 @@ export class GameScene extends Phaser.Scene {
     this.applyShipFacing(ship, ship.getData('key'), dir);
     const lane = ship.getData('lane') || 0;
     const key = ship.getData('key');
-    const base = 12 + lane * 14 + (key === 'ship-sub' ? 8 : 0);
+    const base = 12 + lane * 14 + (key === 'ship-sub' ? 8 : key === 'ship-brig' ? 4 : 0);
     ship.setData('speed', base + Math.random() * (16 + lane * 10));
     // короткий «рывок» — чтобы разворот было видно
     this.tweens.add({
@@ -348,7 +370,7 @@ export class GameScene extends Phaser.Scene {
       .text(W - 56, 40, timeWord, { ...style, fontSize: '16px', fontStyle: '600' })
       .setOrigin(1, 0);
     this.timeLabel = this.add
-      .text(W - 56, 36, '0:00', {
+      .text(W - 56, 58, '0:00', {
         fontFamily: 'Segoe UI, system-ui, sans-serif',
         fontSize: '28px',
         color: '#ffffff',
@@ -375,12 +397,13 @@ export class GameScene extends Phaser.Scene {
     this.gameOverText = this.add
       .text(W / 2, 200, '', {
         fontFamily: 'Segoe UI, system-ui, sans-serif',
-        fontSize: '36px',
+        fontSize: '32px',
         color: '#fff',
         fontStyle: '700',
         stroke: '#000',
         strokeThickness: 6,
         align: 'center',
+        lineSpacing: 6,
       })
       .setOrigin(0.5)
       .setVisible(false);
@@ -762,7 +785,7 @@ export class GameScene extends Phaser.Scene {
       root.add([canopy, cords, box]);
     }
 
-    const loot = Phaser.Utils.Array.GetRandom(CRATE_LOOT);
+    const loot = pickCrateLoot();
     const sharkChance = Math.min(0.85, SHARK_EAT_CHANCE * (this.perks.sharkEatMult ?? 1));
     const baseHit = useBalloon ? 32 : 28;
 
@@ -833,10 +856,6 @@ export class GameScene extends Phaser.Scene {
         box.setOrigin(0.5, 0.9);
         box.setDisplaySize(52, 46);
         box.setPosition(0, 0);
-        if (crate.getData('scanned')) {
-          crate.setData('scanned', false);
-          this.revealCrateLoot(crate);
-        }
       } else {
         this.tweens.add({
           targets: box,
@@ -1018,13 +1037,12 @@ export class GameScene extends Phaser.Scene {
     if (!crate?.active || !crate.getData('alive') || !crate.getData('landed')) return false;
     const x = crate.x;
     const y = crate.y;
-    let loot = crate.getData('loot') || Phaser.Utils.Array.GetRandom(CRATE_LOOT);
+    let loot = crate.getData('loot') || pickCrateLoot();
     this.spawnHit(x, WATERLINE - 8);
     this.destroyLifeCrate(false);
 
     if (loot === 'life' && this.lives >= this.maxLives) {
-      const alt = CRATE_LOOT.filter((k) => k !== 'life');
-      loot = Phaser.Utils.Array.GetRandom(alt);
+      loot = pickCrateLoot(['life']);
     }
 
     // Корсар: шанс отменить плохой лут
@@ -1093,6 +1111,15 @@ export class GameScene extends Phaser.Scene {
       this.refreshHud();
       label = `÷1.5 −${before - this.score}`;
       color = '#ff8a8a';
+    } else if (loot === 'anchors') {
+      const bonus = CRATE_ANCHOR_BONUS;
+      this.playerState = {
+        ...this.playerState,
+        anchors: (this.playerState.anchors || 0) + bonus,
+      };
+      savePlayer(this.playerState);
+      label = `+${bonus} ⚓`;
+      color = '#ffd27a';
     } else if (loot === 'triple') {
       this.buffTripleMs = CRATE_BUFF_MS;
       label =
@@ -1113,10 +1140,11 @@ export class GameScene extends Phaser.Scene {
     if (label) this.showCratePopup(x, y, label, color);
   }
 
-  /** Голограф: при наведении на сундук меняем спрайт на тип лута */
+  /** Голограф: содержимое сундука видно только после приводнения */
   updateCrateScan() {
     const crate = this.lifeCrate;
     if (!crate?.active || !crate.getData('alive')) return;
+    if (!crate.getData('landed')) return;
     if (!this.perks.scanCrate) return;
 
     const half = (crate.getData('hitHalf') || 28) + 36;
@@ -1182,15 +1210,23 @@ export class GameScene extends Phaser.Scene {
     this.gameOverText.setText(text);
     this.gameOverText.setVisible(true);
     if (this.game.canvas) this.game.canvas.style.cursor = 'default';
-    this._menuCall = this.time.delayedCall(1600, () => this.goToMenu());
+    this._menuCall = this.time.delayedCall(2200, () => this.goToMenu());
   }
 
   destroyedMessage() {
     const player = loadPlayer();
     const timeStr = formatDuration(this.battleTimeMs);
-    if (player.lang === 'en') return `SHIP DESTROYED\nScore: ${this.score}\nTime: ${timeStr}`;
-    if (player.lang === 'es') return `BARCO DESTRUIDO\nPuntos: ${this.score}\nTiempo: ${timeStr}`;
-    return `КОРАБЛЬ УНИЧТОЖЕН\nОчки: ${this.score}\nВремя: ${timeStr}`;
+    const earned = Math.floor(Math.max(0, this.score) / 200);
+    if (player.lang === 'en') {
+      const extra = earned > 0 ? `\n+${earned} anchors` : '';
+      return `SHIP DESTROYED\nScore: ${this.score}\nTime: ${timeStr}${extra}`;
+    }
+    if (player.lang === 'es') {
+      const extra = earned > 0 ? `\n+${earned} anclas` : '';
+      return `BARCO DESTRUIDO\nPuntos: ${this.score}\nTiempo: ${timeStr}${extra}`;
+    }
+    const extra = earned > 0 ? `\n+${earned} якорей` : '';
+    return `КОРАБЛЬ УНИЧТОЖЕН\nОчки: ${this.score}\nВремя: ${timeStr}${extra}`;
   }
 
   goToMenu() {

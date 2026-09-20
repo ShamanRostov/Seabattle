@@ -58,7 +58,6 @@ export class MenuScene extends Phaser.Scene {
     this.drawBackdrop();
     this.drawHeader();
     this.drawMainButtons();
-    if (this.lastScore != null && Number.isFinite(this.lastScore)) this.drawScoreBanner();
 
     const reopen =
       this.openPanelOnStart || this.game.registry.get('menuOpenPanel') || null;
@@ -149,29 +148,12 @@ export class MenuScene extends Phaser.Scene {
     }
   }
 
-  drawScoreBanner() {
-    this.add.rectangle(W / 2, 128, 520, 48, 0x102838, 0.9).setStrokeStyle(1, 0x3a7a9a);
-    const timeStr = formatDuration(this.lastTimeMs || 0);
-    const base = `${t(this.player, 'runScore')}: ${this.lastScore}   ${t(this.player, 'runTime')}: ${timeStr}`;
-    const msg =
-      this.lastEarned > 0 ? `${base}   (+${this.lastEarned})` : base;
-    this.add
-      .text(W / 2, 128, msg, {
-        fontFamily: 'Segoe UI, system-ui, sans-serif',
-        fontSize: '18px',
-        color: '#ffffff',
-        fontStyle: '600',
-      })
-      .setOrigin(0.5);
-  }
-
   drawMainButtons() {
     const items = [
-      { key: 'profile', label: 'profile', y: 258 },
-      { key: 'shop', label: 'shop', y: 318 },
-      { key: 'optics', label: 'optics', y: 378 },
-      { key: 'rating', label: 'rating', y: 438 },
-      { key: 'settings', label: 'settings', y: 498 },
+      { key: 'profile', label: 'profile', y: 268 },
+      { key: 'shop', label: 'shop', y: 338 },
+      { key: 'rating', label: 'rating', y: 408 },
+      { key: 'settings', label: 'settings', y: 478 },
     ];
 
     // В бой — с ценой в якорях
@@ -404,8 +386,11 @@ export class MenuScene extends Phaser.Scene {
 
     if (kind === 'profile') this.buildProfilePanel();
     else if (kind === 'shop') this.buildShopPanel();
-    else if (kind === 'optics') this.buildOpticsPanel();
-    else if (kind === 'rating') this.buildRatingPanel();
+    else if (kind === 'optics') {
+      // совместимость: оптика теперь вкладка магазина
+      this.shopTab = 'optics';
+      this.buildShopPanel();
+    } else if (kind === 'rating') this.buildRatingPanel();
     else if (kind === 'settings') this.buildSettingsPanel();
   }
 
@@ -748,36 +733,38 @@ export class MenuScene extends Phaser.Scene {
     const b = this.panelBounds();
     const pirate = this.pirate;
     const tabY = b.top + 44;
+    const tabW = pirate ? 120 : 124;
+    const tabFont = pirate ? '15px' : '15px';
+    const tabSpread = pirate ? 220 : 260;
+    const tabs = [
+      { id: 'anchors', label: 'anchorsTab', x: W / 2 - tabSpread },
+      { id: 'portraits', label: 'portraits', x: W / 2 },
+      { id: 'optics', label: 'optics', x: W / 2 + tabSpread },
+    ];
 
-    this.addPanelHitButton(
-      W / 2 - 110,
-      tabY,
-      t(this.player, 'anchorsTab'),
-      () => {
-        this.shopTab = 'anchors';
-        this.openPanel('shop');
-      },
-      160,
-      40,
-      this.shopTab === 'anchors' ? 0x2a6a4a : pirate ? 0xc4a06a : 0x1a3448,
-      pirate ? '17px' : '16px',
-    );
-    this.addPanelHitButton(
-      W / 2 + 110,
-      tabY,
-      t(this.player, 'portraits'),
-      () => {
-        this.shopTab = 'portraits';
-        this.openPanel('shop');
-      },
-      160,
-      40,
-      this.shopTab === 'portraits' ? 0x2a6a4a : pirate ? 0xc4a06a : 0x1a3448,
-      pirate ? '17px' : '16px',
-    );
+    tabs.forEach((tab) => {
+      this.addPanelHitButton(
+        tab.x,
+        tabY,
+        t(this.player, tab.label),
+        () => {
+          this.shopTab = tab.id;
+          this.openPanel('shop');
+        },
+        tabW,
+        40,
+        this.shopTab === tab.id ? 0x2a6a4a : pirate ? 0xc4a06a : 0x1a3448,
+        tabFont,
+        { compact: true },
+      );
+    });
 
     if (this.shopTab === 'portraits') {
       this.buildPortraitShop(tabY);
+      return;
+    }
+    if (this.shopTab === 'optics') {
+      this.buildOpticsShop(tabY);
       return;
     }
 
@@ -872,13 +859,13 @@ export class MenuScene extends Phaser.Scene {
       this.panel.add(card);
 
       if (this.textures.exists(p.texture)) {
-        const img = this.add.image(x, y - 18, p.texture);
-        img.setDisplaySize(pirate ? 96 : 110, pirate ? 96 : 110);
+        const img = this.add.image(x, y - 28, p.texture);
+        img.setDisplaySize(pirate ? 88 : 100, pirate ? 88 : 100);
         this.panel.add(img);
       }
       this.panel.add(
         this.add
-          .text(x, y + cardH / 2 - 22, portraitName(this.player, p), {
+          .text(x, y + cardH / 2 - 18, portraitName(this.player, p), {
             fontFamily: pirate ? 'Georgia, serif' : 'Segoe UI, system-ui, sans-serif',
             fontSize: pirate ? '15px' : '14px',
             color: pirate ? '#3a2208' : '#e8f4ff',
@@ -956,7 +943,7 @@ export class MenuScene extends Phaser.Scene {
       detail.add(card);
     }
 
-    const padTop = pirate ? 62 : 34;
+    const padTop = pirate ? 72 : 34;
     const padBottom = pirate ? 58 : 40;
     const padX = pirate ? 88 : 48;
     const contentTop = H / 2 - cardH / 2 + padTop;
@@ -989,17 +976,17 @@ export class MenuScene extends Phaser.Scene {
 
     detail.add(
       this.add
-        .text(W / 2, contentTop + 8, portraitName(this.player, p), {
+        .text(W / 2, contentTop - 10, portraitName(this.player, p), {
           fontFamily: 'Georgia, serif',
-          fontSize: pirate ? '28px' : '30px',
+          fontSize: pirate ? '26px' : '28px',
           color: pirate ? '#5a3410' : '#e8f4ff',
           fontStyle: '700',
         })
         .setOrigin(0.5, 0),
     );
 
-    const avSize = 128;
-    const avY = contentTop + 100;
+    const avSize = 108;
+    const avY = contentTop + 130;
     detail.add(
       this.add
         .rectangle(W / 2, avY, avSize + 14, avSize + 14, pirate ? 0xf3e2c0 : 0x08141c, 1)
@@ -1087,18 +1074,18 @@ export class MenuScene extends Phaser.Scene {
     this.openPanel('shop');
   }
 
-  buildOpticsPanel() {
-    this.addPanelTitle('optics');
+  buildOpticsShop(tabY) {
     const sights = getSights(this.player);
     const pirate = this.pirate;
     const b = this.panelBounds();
     const n = sights.length;
     const cardW = pirate ? (n <= 3 ? 150 : 118) : n <= 3 ? 160 : 120;
-    const cardH = pirate ? 188 : 200;
+    const cardH = pirate ? 168 : 180;
     const gap = pirate ? 14 : 16;
     const totalW = n * cardW + (n - 1) * gap;
     const startX = W / 2 - totalW / 2 + cardW / 2;
-    const y = b.top + 48 + cardH / 2;
+    const cardsTop = (tabY ?? b.top + 44) + 36;
+    const y = Math.min(cardsTop + cardH / 2, b.bottom - cardH / 2 - 6);
 
     sights.forEach((sight, i) => {
       const x = startX + i * (cardW + gap);
@@ -1119,14 +1106,14 @@ export class MenuScene extends Phaser.Scene {
       this.panel.add(card);
 
       if (this.textures.exists(sight.texture)) {
-        const img = this.add.image(x, y - 22, sight.texture);
-        img.setDisplaySize(pirate ? 100 : 112, pirate ? 100 : 112);
+        const img = this.add.image(x, y - 18, sight.texture);
+        img.setDisplaySize(pirate ? 92 : 104, pirate ? 92 : 104);
         this.panel.add(img);
       }
 
       this.panel.add(
         this.add
-          .text(x, y + cardH / 2 - 24, sightName(this.player, sight), {
+          .text(x, y + cardH / 2 - 22, sightName(this.player, sight), {
             fontFamily: pirate ? 'Georgia, serif' : 'Segoe UI, system-ui, sans-serif',
             fontSize: pirate ? '14px' : '13px',
             color: pirate ? '#3a2208' : '#e8f4ff',
@@ -1140,7 +1127,7 @@ export class MenuScene extends Phaser.Scene {
       if (equipped) {
         this.panel.add(
           this.add
-            .text(x, y + cardH / 2 - 44, '●', {
+            .text(x, y + cardH / 2 - 42, '●', {
               fontSize: '12px',
               color: pirate ? '#2a6a4a' : '#5ad0a0',
             })
@@ -1205,7 +1192,7 @@ export class MenuScene extends Phaser.Scene {
       detail.add(card);
     }
 
-    const padTop = pirate ? 62 : 34;
+    const padTop = pirate ? 72 : 34;
     const padBottom = pirate ? 58 : 40;
     const padX = pirate ? 88 : 48;
     const contentTop = H / 2 - cardH / 2 + padTop;
@@ -1238,17 +1225,17 @@ export class MenuScene extends Phaser.Scene {
 
     detail.add(
       this.add
-        .text(W / 2, contentTop + 8, sightName(this.player, sight), {
+        .text(W / 2, contentTop - 10, sightName(this.player, sight), {
           fontFamily: 'Georgia, serif',
-          fontSize: pirate ? '26px' : '28px',
+          fontSize: pirate ? '24px' : '26px',
           color: pirate ? '#5a3410' : '#e8f4ff',
           fontStyle: '700',
         })
         .setOrigin(0.5, 0),
     );
 
-    const avSize = 128;
-    const avY = contentTop + 100;
+    const avSize = 108;
+    const avY = contentTop + 130;
     detail.add(
       this.add
         .rectangle(W / 2, avY, avSize + 14, avSize + 14, pirate ? 0xf3e2c0 : 0x08141c, 1)
@@ -1326,14 +1313,16 @@ export class MenuScene extends Phaser.Scene {
     savePlayer(this.player);
     this.refreshHeader();
     this.toast(t(this.player, 'sightBought'));
-    this.openPanel('optics');
+    this.shopTab = 'optics';
+    this.openPanel('shop');
   }
 
   equipSight(sight) {
     this.player.equippedSight = sight.id;
     savePlayer(this.player);
     this.toast(t(this.player, 'sightEquipped'));
-    this.openPanel('optics');
+    this.shopTab = 'optics';
+    this.openPanel('shop');
   }
 
   buildRatingPanel() {
