@@ -187,6 +187,47 @@ function prepareMagentaSprite(scene, key) {
   });
 }
 
+/** Fade the keel so the hull reads as sitting in the water. */
+function sinkHull(scene, key, sinkRatio = 0.13) {
+  if (!scene.textures.exists(key)) return;
+  const src = scene.textures.get(key).getSourceImage();
+  const w = src.width;
+  const h = src.height;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(src, 0, 0);
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  let minY = h;
+  let maxY = 0;
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      if (d[(y * w + x) * 4 + 3] < 24) continue;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (maxY <= minY) return;
+  const contentH = maxY - minY;
+  const fadeStart = maxY - contentH * sinkRatio;
+  const fadeEnd = maxY - contentH * Math.max(0, sinkRatio - 0.045);
+  for (let y = Math.floor(fadeStart); y <= maxY; y += 1) {
+    let keep = 0;
+    if (y <= fadeStart) keep = 1;
+    else if (y < fadeEnd) keep = 1 - (y - fadeStart) / Math.max(1, fadeEnd - fadeStart);
+    if (keep >= 1) continue;
+    for (let x = 0; x < w; x += 1) {
+      const i = (y * w + x) * 4 + 3;
+      d[i] = Math.round(d[i] * keep);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  if (scene.textures.exists(key)) scene.textures.remove(key);
+  scene.textures.addCanvas(key, canvas).refresh();
+}
+
 /** Убрать остатки hot-pink / magenta, не трогая уже прозрачные пиксели */
 function stripHotPink(scene, key) {
   if (!scene.textures.exists(key)) return;
@@ -224,14 +265,15 @@ export class BootScene extends Phaser.Scene {
     const player = loadPlayer();
     this.bootTheme = getThemeId(player);
     const paths = getThemeAssetPaths(this.bootTheme);
-    this.bootPrepared = paths.prepared;
+    this.bootPrepared = paths.prepared === true;
+    this.bootKeyed = paths.keyed === true;
 
-    const skipKeys = new Set(['prepared']);
+    const skipKeys = new Set(['prepared', 'keyed']);
     Object.entries(paths).forEach(([key, url]) => {
       if (skipKeys.has(key) || typeof url !== 'string') return;
       // Сброс старого ключа при смене визуала (classic ↔ pirate)
       if (this.textures.exists(key)) this.textures.remove(key);
-      this.load.image(key, `${url}?v=pirate-side1`);
+      this.load.image(key, `${url}?v=art3`);
     });
   }
 
@@ -242,16 +284,9 @@ export class BootScene extends Phaser.Scene {
     makeParticleDot(this, 'splash', 0xaadfff, 6);
     makeParticleDot(this, 'bubble', 0xc8eeff, 4);
 
-    if (!this.bootPrepared) {
-      // Пиратский пак: страховка от residual pink
+    if (!this.bootPrepared && !this.bootKeyed) {
+      // Пиратский UI ещё может нести розовую кромку. Корабли уже с альфой — их не трогаем.
       [
-        'ship-cargo',
-        'ship-container',
-        'ship-war',
-        'ship-sub',
-        'ship-brig',
-        'torpedo',
-        'explosion',
         'shark',
         'crate',
         'balloon-crate',
@@ -267,18 +302,16 @@ export class BootScene extends Phaser.Scene {
         'portrait-poff',
         'portrait-pcorsair',
       ].forEach((key) => stripHotPink(this, key));
-      this.scene.start('Menu');
-      return;
     }
 
-    prepareSprite(this, 'ship-cargo', { stripWaterBottom: 0.14 });
-    prepareSprite(this, 'ship-container', { stripWaterBottom: 0.12 });
-    prepareSprite(this, 'ship-war', { stripWaterBottom: 0.22 });
-    prepareSprite(this, 'ship-sub', { stripWaterBottom: 0.18 });
-    keyBlackToAlpha(this, 'explosion', 32);
-
-    prepareMagentaSprite(this, 'torpedo').then(() => {
-      this.scene.start('Menu');
-    });
+    const sink = {
+      'ship-sub': 0.2,
+      'ship-container': 0.15,
+      'ship-cargo': 0.12,
+      'ship-war': 0.12,
+      'ship-brig': 0.12,
+    };
+    Object.entries(sink).forEach(([key, ratio]) => sinkHull(this, key, ratio));
+    this.scene.start('Menu');
   }
 }

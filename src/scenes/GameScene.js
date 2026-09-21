@@ -1,15 +1,17 @@
 import Phaser from 'phaser';
 import { createGyroAim } from '../input/gyro.js';
+import { sfx } from '../audio/sfx.js';
 import {
   loadPlayer,
   savePlayer,
-  getEquippedSight,
+  t,
   isPirateTheme,
   getLoadoutPerks,
   CRATE_LOOT_META,
   CRATE_ANCHOR_BONUS,
   pickCrateLoot,
   formatDuration,
+  anchorWord,
 } from '../data/playerStore.js';
 
 const W = 960;
@@ -71,6 +73,7 @@ export class GameScene extends Phaser.Scene {
     this.echoReadyMs = 0;
     this.canFire = true;
     this.gameOver = false;
+    this.briefing = false;
     this._wentToMenu = false;
     this._menuCall = null;
     this.holdLeft = false;
@@ -101,7 +104,7 @@ export class GameScene extends Phaser.Scene {
       delay: 3000,
       loop: true,
       callback: () => {
-        if (this.gameOver) return;
+        if (this.gameOver || this.briefing) return;
         if (this.ships.countActive(true) >= 5) return;
         const dir = Math.random() < 0.5 ? 1 : -1;
         this.spawnShip(dir > 0 ? -80 : W + 80, dir);
@@ -114,16 +117,21 @@ export class GameScene extends Phaser.Scene {
       loop: true,
       callback: () => this.trySpawnLifeCrate(),
     });
+    this.drawBriefing();
   }
 
   drawSea() {
     const pirate = isPirateTheme(loadPlayer());
-    // Пиратское toy-море: горизонт чуть ниже, чтобы корпуса сидели в воде
-    const horizonT = pirate ? 0.52 : SEA_HORIZON_T;
-    const bg = this.add.image(W / 2, H / 2 + (WATERLINE - H * horizonT), 'sea');
-    bg.setDisplaySize(W * (pirate ? 1.2 : 1.15), H * (pirate ? 1.28 : 1.2));
+    const fill = this.add.graphics();
+    fill.fillStyle(pirate ? 0x1f9eb8 : 0x08344e, 1);
+    fill.fillRect(0, 0, W, H);
+    fill.setDepth(0);
+    this.world.add(fill);
+
+    const bg = this.add.image(W / 2, H / 2, 'sea');
     bg.setDepth(0);
     this.world.add(bg);
+    this.placeSeaImage(bg);
     this.seaBg = bg;
     this.seaBgBaseY = bg.y;
     this.seaBgBaseX = bg.x;
@@ -131,11 +139,10 @@ export class GameScene extends Phaser.Scene {
 
     if (!SEA_WAVES_ENABLED) return;
 
-    // Полупрозрачный слой «бликов» — едва заметная рябь
     const ripple = this.add.image(bg.x, bg.y, 'sea');
-    ripple.setDisplaySize(W * (pirate ? 1.22 : 1.18), H * (pirate ? 1.3 : 1.22));
-    ripple.setAlpha(pirate ? 0.16 : 0.28);
-    ripple.setTint(pirate ? 0xffe8c0 : 0xa8d8ff);
+    ripple.setDisplaySize(bg.displayWidth * 1.04, bg.displayHeight * 1.04);
+    ripple.setAlpha(pirate ? 0.14 : 0.22);
+    ripple.setTint(pirate ? 0xffe0b0 : 0xa8d8ff);
     ripple.setBlendMode(Phaser.BlendModes.ADD);
     ripple.setDepth(1);
     this.world.add(ripple);
@@ -147,19 +154,104 @@ export class GameScene extends Phaser.Scene {
     this.world.add(this.seaGlints);
   }
 
+  /** Горизонт текстуры садится на ватерлинию, низ кадра остаётся водой. */
+  placeSeaImage(img) {
+    const src = img.texture.getSourceImage();
+    const horizonT = Phaser.Math.Clamp(this.estimateHorizonT(src), 0.22, 0.68);
+    const dispH = Math.ceil((H - WATERLINE + 48) / (1 - horizonT));
+    const aspect = src.width / Math.max(1, src.height);
+    const dispW = Math.max(W + 140, dispH * aspect);
+    img.setDisplaySize(dispW, dispH);
+    const top = WATERLINE - horizonT * dispH;
+    img.setPosition(W / 2, top + dispH / 2);
+  }
+
+  estimateHorizonT(src) {
+    const w = src.width;
+    const h = src.height;
+    const cols = 36;
+    const canvas = document.createElement('canvas');
+    canvas.width = cols;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    for (let i = 0; i < cols; i += 1) {
+      const sx = Math.floor(((i + 0.5) / cols) * w);
+      ctx.drawImage(src, sx, 0, 1, h, i, 0, 1, h);
+    }
+    const data = ctx.getImageData(0, 0, cols, h).data;
+    const pix = (x, y) => {
+      const i = (y * cols + x) * 4;
+      return [data[i], data[i + 1], data[i + 2]];
+    };
+
+    // Закат над бирюзой: небо оранжевое, вода — где зелёный и синий обгоняют красный.
+    let skyR = 0;
+    let skyB = 0;
+    const skyY = Math.floor(h * 0.22);
+    for (let x = 0; x < cols; x += 1) {
+      const [r, , b] = pix(x, skyY);
+      skyR += r;
+      skyB += b;
+    }
+    if (skyR > skyB + cols * 25) {
+      for (let y = Math.floor(h * 0.3); y < h * 0.72; y += 1) {
+        let cyan = 0;
+        for (let x = 0; x < cols; x += 1) {
+          const [r, g, b] = pix(x, y);
+          if (g > r + 6 && b + 8 > r) cyan += 1;
+        }
+        if (cyan >= cols * 0.45) return y / h;
+      }
+    }
+
+    const lum = new Float32Array(h);
+    for (let y = 0; y < h; y += 1) {
+      let sum = 0;
+      for (let x = 0; x < cols; x += 1) {
+        const [r, g, b] = pix(x, y);
+        sum += r * 0.3 + g * 0.59 + b * 0.11;
+      }
+      lum[y] = sum / cols;
+    }
+    const rad = Math.max(2, Math.floor(h * 0.006));
+    const smooth = new Float32Array(h);
+    for (let y = 0; y < h; y += 1) {
+      let sum = 0;
+      let n = 0;
+      for (let k = -rad; k <= rad; k += 1) {
+        const yy = y + k;
+        if (yy < 0 || yy >= h) continue;
+        sum += lum[yy];
+        n += 1;
+      }
+      smooth[y] = sum / n;
+    }
+    const step = Math.max(3, Math.floor(h * 0.012));
+    let best = 0;
+    let bestY = Math.floor(h * 0.45);
+    for (let y = Math.floor(h * 0.2); y < h * 0.7; y += 1) {
+      const drop = smooth[Math.max(0, y - step)] - smooth[Math.min(h - 1, y + step)];
+      if (drop > best) {
+        best = drop;
+        bestY = y;
+      }
+    }
+    return best < 6 ? 0.48 : bestY / h;
+  }
+
   updateSeaWaves(time, delta) {
     if (!SEA_WAVES_ENABLED || !this.seaBg) return;
 
     this.seaWaveTime += delta;
     const t = this.seaWaveTime;
 
-    // Заметное дыхание горизонта
-    this.seaBg.y = this.seaBgBaseY + Math.sin(t * 0.0014) * 6;
-    this.seaBg.x = this.seaBgBaseX + Math.sin(t * 0.0008) * 8;
+    // Море не сдвигается под корпусами — иначе корабли скользят над водой.
+    this.seaBg.y = this.seaBgBaseY;
+    this.seaBg.x = this.seaBgBaseX;
 
     if (this.seaRipple) {
-      this.seaRipple.y = this.seaBgBaseY + Math.sin(t * 0.0019 + 1.2) * 9;
-      this.seaRipple.x = this.seaBgBaseX + Math.cos(t * 0.0011) * 12;
+      this.seaRipple.y = this.seaBgBaseY;
+      this.seaRipple.x = this.seaBgBaseX;
       this.seaRipple.setAlpha(0.22 + (Math.sin(t * 0.0025) * 0.5 + 0.5) * 0.18);
       this.seaRipple.setScale(
         1.02 + Math.sin(t * 0.0013) * 0.015,
@@ -199,7 +291,7 @@ export class GameScene extends Phaser.Scene {
   spawnShip(x, dir, forcedKey = null) {
     // 0 = далеко у горизонта, 3 = близко к игроку
     const lane = Phaser.Math.Between(0, 3);
-    const y = WATERLINE - 8 + lane * 16;
+    const y = WATERLINE + 4 + lane * 14;
     const pirate = isPirateTheme(this.playerState || loadPlayer());
     const roll = Math.random();
     let key = forcedKey;
@@ -238,14 +330,21 @@ export class GameScene extends Phaser.Scene {
       pirate ? 0.45 : 0.18 + lane * 0.04,
     );
     this.world.add(foam);
+    const shadow = this.add.ellipse(x, y + 5, foamW * 0.85, pirate ? 11 : 7, 0x041820, pirate ? 0.28 : 0.4);
+    shadow.setDepth(8 + lane);
+    this.world.add(shadow);
 
     const ship = this.add.image(x, y, key);
     ship.setOrigin(0.5, 0.98);
     const sizeMul =
-      (key === 'ship-sub' ? 0.82 : key === 'ship-container' ? 1.08 : key === 'ship-brig' ? 1.12 : 1) *
-      (pirate ? 1.35 : 1);
+      (key === 'ship-sub' ? 0.95 : key === 'ship-container' ? 1.26 : key === 'ship-brig' ? 1.04 : key === 'ship-cargo' ? 0.92 : 1) *
+      (pirate ? 1.12 : 1);
     const targetW = (85 + lane * 32 + Phaser.Math.Between(-8, 12)) * sizeMul;
     ship.setScale(targetW / Math.max(1, ship.width));
+    // Прозрачный киль уже съеден. Опускаем дальше, чтобы вода резала непрозрачный борт.
+    const keel = { 'ship-sub': 0.34, 'ship-container': 0.24, 'ship-cargo': 0.22, 'ship-war': 0.24, 'ship-brig': 0.24 };
+    ship.y = y + ship.displayHeight * (keel[key] || 0.14);
+    shadow.setDisplaySize(targetW * 0.72, pirate ? 12 : 8);
     this.applyShipFacing(ship, key, dir);
     ship.setDepth(10 + lane);
     foam.setDepth(9 + lane);
@@ -273,6 +372,8 @@ export class GameScene extends Phaser.Scene {
       key,
       hitHalf: ship.displayWidth * (key === 'ship-sub' ? 0.42 : 0.36),
       foam,
+      shadow,
+      surfaceY: y,
       wakeAcc: 0,
       turnIn,
       turnsLeft,
@@ -319,78 +420,148 @@ export class GameScene extends Phaser.Scene {
   }
 
   drawFrame() {
+    const pirate = isPirateTheme(this.playerState);
     const hole = this.make.graphics({ x: 0, y: 0 }, false);
     hole.fillStyle(0xffffff);
     hole.fillRoundedRect(28, 22, W - 56, H - 44, 22);
     this.world.setMask(hole.createGeometryMask());
 
-    const rt = this.add.renderTexture(0, 0, W, H).setOrigin(0);
+    const rt = this.add.renderTexture(0, 0, W, H).setOrigin(0).setDepth(90);
     const cover = this.make.graphics({ x: 0, y: 0 }, false);
-    cover.fillStyle(0x05080c, 1);
+    cover.fillStyle(pirate ? 0x1a1008 : 0x12161a, 1);
     cover.fillRect(0, 0, W, H);
     rt.draw(cover);
     const cut = this.make.graphics({ x: 0, y: 0 }, false);
     cut.fillStyle(0xffffff);
     cut.fillRoundedRect(28, 22, W - 56, H - 44, 22);
     rt.erase(cut);
+
+    this.drawVignette(pirate);
+    this.drawBezel(pirate);
+  }
+
+  drawVignette(pirate) {
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    const glow = ctx.createRadialGradient(W / 2, H * 0.42, H * 0.2, W / 2, H * 0.46, H * 0.72);
+    glow.addColorStop(0, 'rgba(0,0,0,0)');
+    glow.addColorStop(1, pirate ? 'rgba(40,18,4,0.45)' : 'rgba(0,0,0,0.5)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = pirate ? 'rgba(255,236,200,0.14)' : 'rgba(210,230,240,0.16)';
+    ctx.lineWidth = 1;
+    const scratches = [
+      [80, 70, 210, 96],
+      [640, 120, 820, 150],
+      [140, 400, 280, 430],
+      [700, 360, 860, 410],
+      [400, 80, 470, 140],
+    ];
+    scratches.forEach(([x1, y1, x2, y2]) => {
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    });
+    if (this.textures.exists('vignette')) this.textures.remove('vignette');
+    this.textures.addCanvas('vignette', canvas);
+    const veil = this.add.image(W / 2, H / 2, 'vignette').setDepth(80);
+    const mask = this.make.graphics({ x: 0, y: 0 }, false);
+    mask.fillStyle(0xffffff);
+    mask.fillRoundedRect(28, 22, W - 56, H - 44, 22);
+    veil.setMask(mask.createGeometryMask());
+  }
+
+  drawBezel(pirate) {
+    const g = this.add.graphics().setDepth(96);
+    const metal = pirate ? 0x8a5a28 : 0x6d767c;
+    const edge = pirate ? 0xe6c27a : 0xd5dde2;
+    g.lineStyle(16, metal, 1);
+    g.strokeRoundedRect(20, 14, W - 40, H - 28, 26);
+    g.lineStyle(3, edge, 0.85);
+    g.strokeRoundedRect(34, 28, W - 68, H - 56, 16);
+    g.lineStyle(2, pirate ? 0x3a2208 : 0x1c2226, 0.9);
+    g.strokeRoundedRect(28, 22, W - 56, H - 44, 22);
   }
 
   drawReticle() {
-    const player = loadPlayer();
-    const sight = getEquippedSight(player);
-    this.reticle = this.add.container(this.aimX, WATERLINE);
-    const fallback = isPirateTheme(player) ? 'sight-spyglass' : 'sight-classic';
-    const key = sight.texture && this.textures.exists(sight.texture) ? sight.texture : fallback;
-    const img = this.add.image(0, 0, key);
-    img.setDisplaySize(140, 140);
-    img.setAlpha(0.95);
-    this.reticle.add(img);
-    this.reticle.setDepth(100);
+    const pirate = isPirateTheme(this.playerState);
+    this.reticle = this.add.container(this.aimX, WATERLINE).setDepth(100);
+    const g = this.add.graphics();
+    const color = pirate ? 0xf0d090 : 0xff4a4a;
+    const arm = 22;
+    const gap = 11;
+    g.lineStyle(2, color, 0.92);
+    // Уголки: центр пустой, корабль виден.
+    g.strokeRect(-arm, -arm, 10, 10);
+    g.strokeRect(arm - 10, -arm, 10, 10);
+    g.strokeRect(-arm, arm - 10, 10, 10);
+    g.strokeRect(arm - 10, arm - 10, 10, 10);
+    g.lineStyle(1.5, color, 0.8);
+    g.lineBetween(-arm - 8, 0, -gap, 0);
+    g.lineBetween(gap, 0, arm + 8, 0);
+    g.lineBetween(0, -arm - 6, 0, -gap);
+    g.lineBetween(0, gap, 0, arm + 6);
+    g.fillStyle(color, 0.95);
+    g.fillCircle(0, 0, 1.6);
+    this.reticle.add(g);
   }
 
   drawHud() {
-    const player = loadPlayer();
+    const player = this.playerState;
+    const pirate = isPirateTheme(player);
+    const font = pirate
+      ? 'Georgia, "Palatino Linotype", serif'
+      : 'Segoe UI, system-ui, sans-serif';
+    this.hudFont = font;
     const scoreWord =
       player.lang === 'en' ? 'SCORE' : player.lang === 'es' ? 'PUNTOS' : 'ОЧКИ';
     const timeWord =
       player.lang === 'en' ? 'TIME' : player.lang === 'es' ? 'TIEMPO' : 'ВРЕМЯ';
-    const style = { fontFamily: 'Segoe UI, system-ui, sans-serif', color: '#ff5a5a' };
-
-    this.add.text(56, 40, scoreWord, { ...style, fontSize: '16px', fontStyle: '600' });
-    this.scoreLabel = this.add.text(130, 36, '0', {
-      fontFamily: 'Segoe UI, system-ui, sans-serif',
-      fontSize: '28px',
-      color: '#ffffff',
-      fontStyle: '700',
-      stroke: '#000000',
-      strokeThickness: 4,
-    });
+    const labelColor = pirate ? '#f0d9a8' : '#ff5a5a';
+    const valueColor = pirate ? '#fff6e4' : '#ffffff';
+    const stroke = pirate ? '#3a2208' : '#000000';
+    const style = { fontFamily: font, color: labelColor };
 
     this.add
-      .text(W - 56, 40, timeWord, { ...style, fontSize: '16px', fontStyle: '600' })
-      .setOrigin(1, 0);
-    this.timeLabel = this.add
-      .text(W - 56, 58, '0:00', {
-        fontFamily: 'Segoe UI, system-ui, sans-serif',
+      .text(56, 40, scoreWord, { ...style, fontSize: '16px', fontStyle: '700' })
+      .setDepth(120);
+    this.scoreLabel = this.add
+      .text(130, 36, '0', {
+        fontFamily: font,
         fontSize: '28px',
-        color: '#ffffff',
+        color: valueColor,
         fontStyle: '700',
-        stroke: '#000000',
+        stroke,
         strokeThickness: 4,
       })
-      .setOrigin(1, 0);
+      .setDepth(120);
 
+    this.add
+      .text(W - 56, 40, timeWord, { ...style, fontSize: '16px', fontStyle: '700' })
+      .setOrigin(1, 0)
+      .setDepth(120);
+    this.timeLabel = this.add
+      .text(W - 56, 58, '0:00', {
+        fontFamily: font,
+        fontSize: '28px',
+        color: valueColor,
+        fontStyle: '700',
+        stroke,
+        strokeThickness: 4,
+      })
+      .setOrigin(1, 0)
+      .setDepth(120);
+
+    this.ensureLifeIcon(pirate);
     this.hearts = [];
     for (let i = 0; i < this.maxLives; i += 1) {
       const heart = this.add
-        .text(56 + i * 36, 78, '♥', {
-          fontFamily: 'Segoe UI, system-ui, sans-serif',
-          fontSize: '28px',
-          color: '#ff2d4a',
-          stroke: '#4a0000',
-          strokeThickness: 3,
-        })
-        .setOrigin(0, 0);
+        .image(68 + i * 34, 96, this.lifeKey)
+        .setDepth(120)
+        .setScale(1);
       this.hearts.push(heart);
     }
 
@@ -406,6 +577,7 @@ export class GameScene extends Phaser.Scene {
         lineSpacing: 6,
       })
       .setOrigin(0.5)
+      .setDepth(150)
       .setVisible(false);
 
     // Стрелки и «ГИРО» убраны — управление мышью / клавишами / гиро без кнопки на экране
@@ -422,6 +594,84 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5, 0)
       .setDepth(130);
     this.refreshHud();
+  }
+
+  ensureLifeIcon(pirate) {
+    const key = pirate ? 'life-pirate' : 'life-classic';
+    this.lifeKey = key;
+    if (this.textures.exists(key)) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = 32;
+    canvas.height = 32;
+    const ctx = canvas.getContext('2d');
+    ctx.translate(16, 17);
+    ctx.beginPath();
+    ctx.moveTo(0, 7);
+    ctx.bezierCurveTo(-16, -6, -8, -16, 0, -7);
+    ctx.bezierCurveTo(8, -16, 16, -6, 0, 7);
+    ctx.closePath();
+    ctx.fillStyle = pirate ? '#c4333c' : '#e4253c';
+    ctx.fill();
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = pirate ? '#f0d090' : '#4a0008';
+    ctx.stroke();
+    ctx.fillStyle = pirate ? 'rgba(255, 228, 170, 0.45)' : 'rgba(255,255,255,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(-4, -5, 3.2, 2, -0.6, 0, Math.PI * 2);
+    ctx.fill();
+    this.textures.addCanvas(key, canvas);
+  }
+
+  drawBriefing() {
+    if (this.playerState.hintSeen) return;
+    this.briefing = true;
+    const pirate = isPirateTheme(this.playerState);
+    const layer = this.add.container(0, 0).setDepth(220);
+    this.briefingLayer = layer;
+    layer.add(this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.5));
+    if (pirate && this.textures.exists('panel')) {
+      layer.add(this.add.image(W / 2, H / 2, 'panel').setDisplaySize(700, 360));
+    } else {
+      layer.add(
+        this.add
+          .rectangle(W / 2, H / 2, 620, 300, 0x0d1a24, 0.97)
+          .setStrokeStyle(2, 0x4a8ab0),
+      );
+    }
+    const font = pirate
+      ? 'Georgia, "Palatino Linotype", serif'
+      : 'Segoe UI, system-ui, sans-serif';
+    layer.add(
+      this.add
+        .text(W / 2, H / 2 - 16, t(this.playerState, 'hintBody'), {
+          fontFamily: font,
+          fontSize: pirate ? '22px' : '20px',
+          color: pirate ? '#3a2208' : '#e8f4ff',
+          align: 'center',
+          lineSpacing: 10,
+          wordWrap: { width: 480 },
+        })
+        .setOrigin(0.5),
+    );
+    layer.add(
+      this.add
+        .text(W / 2, H / 2 + 118, t(this.playerState, 'hintGo'), {
+          fontFamily: font,
+          fontSize: '16px',
+          color: pirate ? '#8a5a20' : '#9ec9e8',
+        })
+        .setOrigin(0.5),
+    );
+  }
+
+  dismissBriefing() {
+    if (!this.briefing) return;
+    this.briefing = false;
+    this.briefingLayer?.destroy(true);
+    this.briefingLayer = null;
+    this.playerState.hintSeen = true;
+    savePlayer(this.playerState);
+    sfx.unlock();
   }
 
   makeButton(x, y, label, onDown, width = 64) {
@@ -469,6 +719,10 @@ export class GameScene extends Phaser.Scene {
     this.cursors = this.input.keyboard.createCursorKeys();
     this.keys = this.input.keyboard.addKeys('A,D,SPACE,R');
     this.keys.SPACE.on('down', () => {
+      if (this.briefing) {
+        this.dismissBriefing();
+        return;
+      }
       if (this.gameOver) return;
       this.tryFire();
     });
@@ -496,6 +750,11 @@ export class GameScene extends Phaser.Scene {
     });
 
     this.input.on('pointerdown', (pointer) => {
+      sfx.unlock();
+      if (this.briefing) {
+        this.dismissBriefing();
+        return;
+      }
       if (this.pointerOverUi) return;
       if (this.gameOver) {
         this.goToMenu();
@@ -528,6 +787,7 @@ export class GameScene extends Phaser.Scene {
     if (this.torpedoes.countActive(true) > 0) return;
 
     this.canFire = false;
+    sfx.shot();
     this.aimX = this.aimTargetX;
     if (this.reticle) this.reticle.x = this.aimX;
 
@@ -639,7 +899,7 @@ export class GameScene extends Phaser.Scene {
     if (x != null && y != null && points !== 0) {
       const popup = this.add
         .text(x, y, points > 0 ? `+${points}` : `${points}`, {
-          fontFamily: 'Segoe UI, system-ui, sans-serif',
+          fontFamily: this.hudFont || 'Segoe UI, system-ui, sans-serif',
           fontSize: '22px',
           color: points > 0 ? '#ffe566' : '#ff8a8a',
           fontStyle: '700',
@@ -662,6 +922,7 @@ export class GameScene extends Phaser.Scene {
   loseLife() {
     if (this.lives <= 0) return;
     this.lives -= 1;
+    sfx.hurt();
     const heart = this.hearts[this.lives];
     if (heart?.active) {
       this.tweens.add({
@@ -693,7 +954,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   trySpawnLifeCrate() {
-    if (this.gameOver) return;
+    if (this.gameOver || this.briefing) return;
     if (this.lifeCrate?.active) return;
     this.spawnLifeCrate(Phaser.Math.Between(160, W - 160));
   }
@@ -1039,6 +1300,7 @@ export class GameScene extends Phaser.Scene {
     const y = crate.y;
     let loot = crate.getData('loot') || pickCrateLoot();
     this.spawnHit(x, WATERLINE - 8);
+    sfx.crate();
     this.destroyLifeCrate(false);
 
     if (loot === 'life' && this.lives >= this.maxLives) {
@@ -1118,7 +1380,7 @@ export class GameScene extends Phaser.Scene {
         anchors: (this.playerState.anchors || 0) + bonus,
       };
       savePlayer(this.playerState);
-      label = `+${bonus} ⚓`;
+      label = `+${bonus} ${anchorWord(player.lang, bonus)}`;
       color = '#ffd27a';
     } else if (loot === 'triple') {
       this.buffTripleMs = CRATE_BUFF_MS;
@@ -1217,15 +1479,13 @@ export class GameScene extends Phaser.Scene {
     const player = loadPlayer();
     const timeStr = formatDuration(this.battleTimeMs);
     const earned = Math.floor(Math.max(0, this.score) / 200);
+    const extra = earned > 0 ? `\n+${earned} ${anchorWord(player.lang, earned)}` : '';
     if (player.lang === 'en') {
-      const extra = earned > 0 ? `\n+${earned} anchors` : '';
       return `SHIP DESTROYED\nScore: ${this.score}\nTime: ${timeStr}${extra}`;
     }
     if (player.lang === 'es') {
-      const extra = earned > 0 ? `\n+${earned} anclas` : '';
       return `BARCO DESTRUIDO\nPuntos: ${this.score}\nTiempo: ${timeStr}${extra}`;
     }
-    const extra = earned > 0 ? `\n+${earned} якорей` : '';
     return `КОРАБЛЬ УНИЧТОЖЕН\nОчки: ${this.score}\nВремя: ${timeStr}${extra}`;
   }
 
@@ -1244,6 +1504,8 @@ export class GameScene extends Phaser.Scene {
     if (!ship) return;
     const foam = ship.getData('foam');
     if (foam?.active) foam.destroy();
+    const shadow = ship.getData('shadow');
+    if (shadow?.active) shadow.destroy();
     ship.setData('alive', false);
     if (ship.active) ship.destroy();
   }
@@ -1401,6 +1663,10 @@ export class GameScene extends Phaser.Scene {
 
   update(_t, delta) {
     this.updateSeaWaves(_t, delta);
+    if (this.briefing) {
+      this.applyAim(delta);
+      return;
+    }
 
     if (!this.gameOver) {
       this.battleTimeMs += delta;
@@ -1435,9 +1701,15 @@ export class GameScene extends Phaser.Scene {
 
       ship.x += ship.getData('dir') * ship.getData('speed') * (delta / 1000);
       const foam = ship.getData('foam');
+      const surfaceY = ship.getData('surfaceY') ?? ship.y;
       if (foam?.active) {
         foam.x = ship.x;
-        foam.y = ship.y + 2;
+        foam.y = surfaceY;
+      }
+      const shadow = ship.getData('shadow');
+      if (shadow?.active) {
+        shadow.x = ship.x;
+        shadow.y = surfaceY + 2;
       }
 
       // След пены за кораблём (пиратский toy-режим — заметнее)
@@ -1448,7 +1720,7 @@ export class GameScene extends Phaser.Scene {
           const dir = ship.getData('dir');
           const blob = this.add.ellipse(
             ship.x - dir * (ship.displayWidth * 0.28 + Phaser.Math.Between(0, 10)),
-            ship.y + 4 + Phaser.Math.Between(-2, 3),
+            surfaceY + Phaser.Math.Between(-1, 2),
             Phaser.Math.Between(18, 32),
             Phaser.Math.Between(7, 12),
             0xfff6e0,
@@ -1656,10 +1928,12 @@ export class GameScene extends Phaser.Scene {
       if (crit) {
         this.showCratePopup(best.x, WATERLINE - best.displayHeight * 0.75, 'CRIT!', '#ffd27a');
       }
+      sfx.hit();
       const dying = best;
       dying.setData('alive', false);
       dying.setData('hasFired', true);
       dying.getData('foam')?.destroy();
+      dying.getData('shadow')?.destroy();
       this.tweens.add({
         targets: dying,
         alpha: 0,
@@ -1673,6 +1947,7 @@ export class GameScene extends Phaser.Scene {
       if (this.perks.missPenaltyAdd > 0) {
         this.addScore(-this.perks.missPenaltyAdd, aimX, WATERLINE - 20);
       }
+      sfx.splash();
       const ripple = this.add.ellipse(aimX, WATERLINE, 6, 3, 0xffffff, 0.5);
       ripple.setDepth(40);
       this.tweens.add({

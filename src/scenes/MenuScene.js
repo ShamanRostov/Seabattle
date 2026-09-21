@@ -22,8 +22,10 @@ import {
   tryStartGame,
   perkText,
   formatDuration,
+  anchorWord,
 } from '../data/playerStore.js';
 import { validatePlayerName } from '../data/nameFilter.js';
+import { sfx } from '../audio/sfx.js';
 
 const W = 960;
 const H = 540;
@@ -231,6 +233,8 @@ export class MenuScene extends Phaser.Scene {
       .setOrigin(0, 0.5);
 
     bg.on('pointerdown', () => {
+      sfx.unlock();
+      sfx.ui();
       const next = tryStartGame(this.player);
       if (!next) {
         this.needAnchors();
@@ -287,7 +291,11 @@ export class MenuScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
-    bg.on('pointerdown', () => onClick());
+    bg.on('pointerdown', () => {
+      sfx.unlock();
+      sfx.ui();
+      onClick();
+    });
 
     return { bg, text };
   }
@@ -461,7 +469,7 @@ export class MenuScene extends Phaser.Scene {
       `${t(this.player, 'name')}: ${this.player.name || '—'}`,
       `${t(this.player, 'rank')}: ${rankName(this.player, rank)}`,
       `${t(this.player, 'career')}: ${this.player.careerScore} ${t(this.player, 'points')}`,
-      `${t(this.player, 'anchors')}: ${this.player.anchors}`,
+      `${this.player.anchors} ${anchorWord(this.player.lang, this.player.anchors)}`,
     ];
     const textBlockH = (lines.length - 1) * lineH;
     const textTop = portraitCy - textBlockH / 2;
@@ -797,7 +805,7 @@ export class MenuScene extends Phaser.Scene {
       const tag = pack.tagKey ? `  ·  ${t(this.player, pack.tagKey)}` : '';
       this.panel.add(
         this.add
-          .text(W / 2 - rowW / 2 + 78, y, `${pack.anchors}${tag}`, {
+          .text(W / 2 - rowW / 2 + 78, y, `${pack.anchors} ${anchorWord(this.player.lang, pack.anchors)}${tag}`, {
             fontFamily: pirate ? 'Georgia, serif' : 'Segoe UI, system-ui, sans-serif',
             fontSize: qtySize,
             color: pirate ? '#5a3410' : '#ffd27a',
@@ -816,7 +824,7 @@ export class MenuScene extends Phaser.Scene {
           this.player.anchors += pack.anchors;
           savePlayer(this.player);
           this.refreshHeader();
-          this.toast(`+${pack.anchors}`);
+          this.toast(`+${pack.anchors} ${anchorWord(this.player.lang, pack.anchors)}`);
           this.openPanel('shop');
         },
         156,
@@ -1573,6 +1581,10 @@ export class MenuScene extends Phaser.Scene {
       () => {
         this.player.soundOn = !this.player.soundOn;
         savePlayer(this.player);
+        if (this.player.soundOn) {
+          sfx.unlock();
+          sfx.ui();
+        }
         this.openPanel('settings');
       },
       260,
@@ -1635,6 +1647,8 @@ export class MenuScene extends Phaser.Scene {
       .setDepth(61);
     bg.on('pointerdown', (pointer, _lx, _ly, event) => {
       event?.stopPropagation?.();
+      sfx.unlock();
+      sfx.ui();
       onClick();
     });
     this.panel.add(bg);

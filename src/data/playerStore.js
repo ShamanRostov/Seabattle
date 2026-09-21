@@ -106,6 +106,16 @@ export const STR = {
   visualMode: { ru: 'Визуал', en: 'Visual', es: 'Visual' },
   themeClassic: { ru: 'Классика', en: 'Classic', es: 'Clásica' },
   themePirate: { ru: 'Пиратская бухта', en: 'Pirate Cove', es: 'Cala Pirata' },
+  hintBody: {
+    ru: 'Боевые корабли стреляют в ответ.\nСундук: жизнь, множители, ром, иногда штраф или якоря.\nКаждый выстрел стоит 20 очков.',
+    en: 'Warships shoot back.\nCrates hold a life, multipliers, rum, sometimes a penalty or anchors.\nEach shot costs 20 points.',
+    es: 'Los barcos de guerra disparan.\nEl cofre: vida, multiplicadores, ron, a veces penalización o anclas.\nCada disparo cuesta 20 puntos.',
+  },
+  hintGo: {
+    ru: 'Нажмите, чтобы начать',
+    en: 'Click to start',
+    es: 'Pulse para empezar',
+  },
 };
 
 export const PORTRAITS_CLASSIC = [
@@ -360,6 +370,7 @@ const defaultState = () => ({
   equippedPortrait: 'default',
   ownedPortraits: ['default', 'cabin'],
   soundOn: true,
+  hintSeen: false,
   lang: 'ru',
   daily: {}, // { 'YYYY-MM-DD': bestScoreThatDay }
 });
@@ -433,6 +444,7 @@ export function loadPlayer() {
     if (!parsed.ownedPortraits.includes('cabin')) parsed.ownedPortraits.push('cabin');
     if (!parsed.ownedPortraits.includes('default')) parsed.ownedPortraits.push('default');
     if (!parsed.equippedPortrait) parsed.equippedPortrait = 'default';
+    if (typeof parsed.hintSeen !== 'boolean') parsed.hintSeen = false;
     if (!Array.isArray(parsed.ownedSights) || !parsed.ownedSights.length) {
       parsed.ownedSights = ['classic', 'spyglass'];
     }
@@ -530,6 +542,23 @@ export function buildLeaderboard(state, mode = 'daily') {
 }
 
 /** t(state, key) или t(state, {ru,en,es}) */
+/** 1 якорь, 2 якоря, 5 якорей, 11 якорей, 21 якорь */
+export function ruPlural(n, one, few, many) {
+  const abs = Math.abs(Math.trunc(Number(n) || 0));
+  const mod100 = abs % 100;
+  const mod10 = abs % 10;
+  if (mod100 >= 11 && mod100 <= 14) return many;
+  if (mod10 === 1) return one;
+  if (mod10 >= 2 && mod10 <= 4) return few;
+  return many;
+}
+
+export function anchorWord(lang, n) {
+  if (lang === 'en') return Math.abs(Math.trunc(Number(n) || 0)) === 1 ? 'anchor' : 'anchors';
+  if (lang === 'es') return Math.abs(Math.trunc(Number(n) || 0)) === 1 ? 'ancla' : 'anclas';
+  return ruPlural(n, 'якорь', 'якоря', 'якорей');
+}
+
 export function t(state, keyOrDict) {
   const lang = LANGS.includes(state?.lang) ? state.lang : 'ru';
   if (typeof keyOrDict === 'string') {
@@ -756,6 +785,7 @@ export function getThemeAssetPaths(themeId) {
     'portrait-captain': 'assets/ui/portrait-captain.png',
     'portrait-officer': 'assets/ui/portrait-officer.png',
     'portrait-pirate': 'assets/ui/portrait-pirate.png',
-    prepared: true,
+    prepared: false,
+    keyed: true,
   };
 }
