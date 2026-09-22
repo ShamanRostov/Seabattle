@@ -1,7 +1,12 @@
 import { defineConfig } from 'vite';
 
-export default defineConfig({
+const CONTOURS = new Set(['beeline', 'megafon', 'yandex', 'crazygames']);
+
+export default defineConfig(({ mode }) => ({
   base: './',
+  define: {
+    __SEABATTLE_CONTOUR__: JSON.stringify(CONTOURS.has(mode) ? mode : ''),
+  },
   server: {
     host: true,
     port: 5173,
@@ -10,4 +15,4 @@ export default defineConfig({
     outDir: 'dist',
     assetsInlineLimit: 0,
   },
-});
+}));

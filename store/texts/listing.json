@@ -1,0 +1,29 @@
+{
+  "ru": {
+    "title": "Кильватер",
+    "seo": "Топите вражеские корабли с перископа, пока они не открыли ответный огонь. С каждой минутой море становится злее.",
+    "short": "Топите корабли, пока море не ответило залпом.",
+    "description": "С перископа вы берёте на прицел суда у горизонта и пускаете торпеду. Торговцы идут спокойно, военные отвечают огнём, а с каждой минутой кораблей становится больше. Сундук на парашюте может вернуть жизнь, удвоить счёт или принести якоря. Якоря открывают следующий бой и редкую оптику. Море можно сменить: стальной перископ или пиратская бухта. Партия не обрывается по таймеру — держитесь, пока есть жизни.",
+    "howToPlay": "Наведите прицел мышью или стрелками и стреляйте щелчком или пробелом. Пока своя торпеда летит, вторую выпустить нельзя. Попадание даёт очки, каждый выстрел снимает 20. Военный корабль стреляет в ответ и забирает жизнь. Сундук нужно сбить после приводнения, иначе его может съесть акула. Вход в бой стоит якоря. Их приносят удачные партии.",
+    "keywords": "корабли, торпеда, перископ, аркада, море, стрелялка, якоря",
+    "controls": "Мышь или стрелки — прицел. Щелчок или пробел — выстрел."
+  },
+  "en": {
+    "title": "Keelwater",
+    "seo": "Sink enemy ships from a periscope before they fire back. The sea gets meaner with every minute.",
+    "short": "Sink ships before the sea fires back.",
+    "description": "Line up ships on the horizon and send a torpedo. Traders sail quietly, warships shoot back, and every minute the traffic gets thicker. A parachute crate can restore a life, double the score, or drop anchors. Anchors pay for the next battle and rarer optics. Switch the sea between a steel periscope and a pirate cove. A run does not end on a clock. Last as long as your lives hold.",
+    "howToPlay": "Aim with the mouse or the arrow keys. Fire with a click or the space bar. You cannot launch a second torpedo while yours is still in the water. Hits score points, and every shot costs 20. A warship fires back and takes a life. Shoot the crate after it lands, or a shark may eat it. Starting a battle spends anchors. Strong runs pay them back.",
+    "keywords": "ships, torpedo, periscope, arcade, sea, shooter, anchors",
+    "controls": "Mouse or arrows to aim. Click or space to fire."
+  },
+  "es": {
+    "title": "Keelwater",
+    "seo": "Hunde barcos enemigos desde el periscopio antes de que devuelvan el fuego. El mar se endurece cada minuto.",
+    "short": "Hunde barcos antes de que el mar responda.",
+    "description": "Apunta a los barcos del horizonte y lanza un torpedo. Los mercantes navegan tranquilos, los de guerra responden, y cada minuto el tráfico se vuelve más denso. Un cofre en paracaídas puede devolver una vida, duplicar los puntos o traer anclas. Las anclas pagan la siguiente batalla y una óptica más rara. El mar puede ser un periscopio de acero o una cala pirata. La partida no se corta por reloj: aguanta mientras te queden vidas.",
+    "howToPlay": "Apunta con el ratón o las flechas. Dispara con un clic o la barra espaciadora. No sale un segundo torpedo mientras el tuyo sigue en el agua. Los impactos dan puntos y cada disparo resta 20. Un barco de guerra responde y quita una vida. Derriba el cofre después de que caiga al agua, o puede comérselo un tiburón. Entrar en batalla gasta anclas. Las partidas buenas las devuelven.",
+    "keywords": "barcos, torpedo, periscopio, arcade, mar, disparos, anclas",
+    "controls": "Ratón o flechas para apuntar. Clic o espacio para disparar."
+  }
+}

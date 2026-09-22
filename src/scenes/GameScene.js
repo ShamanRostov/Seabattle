@@ -1,6 +1,8 @@
 import Phaser from 'phaser';
 import { createGyroAim } from '../input/gyro.js';
 import { sfx } from '../audio/sfx.js';
+import { getContour } from '../contour/contour.js';
+import { gameplayStart, gameplayStop, onPlatformPause, showInterstitial, showRewarded } from '../platform/platform.js';
 import {
   loadPlayer,
   savePlayer,
@@ -12,6 +14,7 @@ import {
   pickCrateLoot,
   formatDuration,
   anchorWord,
+  anchorsFromScore,
 } from '../data/playerStore.js';
 
 const W = 960;
@@ -51,6 +54,9 @@ const LANE_BONUS = [80, 50, 25, 0]; // далеко → близко
 const INTERCEPT_SCORE = 75; // сбил вражескую торпеду
 /** Штраф за каждый выстрел (меньше минимума за корабль = 100). */
 const SHOT_PENALTY = 20;
+/** До этой отметки темп обычный. Дальше ступень каждую минуту, без потолка по времени. */
+const PRESSURE_START_MS = 60 * 1000;
+const PRESSURE_STEP_MS = 60 * 1000;
 
 export class GameScene extends Phaser.Scene {
   constructor() {
@@ -74,13 +80,19 @@ export class GameScene extends Phaser.Scene {
     this.canFire = true;
     this.gameOver = false;
     this.briefing = false;
+    this.simPaused = false;
+    this.platformPaused = false;
+    this.continueUsed = false;
+    this.continueOpen = false;
     this._wentToMenu = false;
     this._menuCall = null;
     this.holdLeft = false;
     this.holdRight = false;
     this.pointerOverUi = false;
-    this.gyro = createGyroAim({ axis: 'gamma' });
+    this.touchAim = getContour().mobile;
+    this.gyro = createGyroAim();
     this._onMouseMove = null;
+    if (this.touchAim) this.input.addPointer(2);
 
     this.world = this.add.container(0, 0);
     this.drawSea();
@@ -99,17 +111,10 @@ export class GameScene extends Phaser.Scene {
     this.drawReticle();
     this.drawHud();
     this.bindInput();
+    this.drawMobileControls();
 
-    this.time.addEvent({
-      delay: 3000,
-      loop: true,
-      callback: () => {
-        if (this.gameOver || this.briefing) return;
-        if (this.ships.countActive(true) >= 5) return;
-        const dir = Math.random() < 0.5 ? 1 : -1;
-        this.spawnShip(dir > 0 ? -80 : W + 80, dir);
-      },
-    });
+    this.announcedLevel = 0;
+    this.scheduleNextSpawn();
 
     this.time.delayedCall(9000, () => this.trySpawnLifeCrate());
     this.time.addEvent({
@@ -118,6 +123,16 @@ export class GameScene extends Phaser.Scene {
       callback: () => this.trySpawnLifeCrate(),
     });
     this.drawBriefing();
+    this._offPause = onPlatformPause((paused) => {
+      this.platformPaused = paused;
+      if (paused) {
+        this.releaseAimCapture();
+        this.showBattleCursor();
+      } else if (!this.gameOver && !this.continueOpen) {
+        this.hideBattleCursor();
+      }
+    });
+    if (!this.briefing) gameplayStart();
   }
 
   drawSea() {
@@ -293,8 +308,21 @@ export class GameScene extends Phaser.Scene {
     const lane = Phaser.Math.Between(0, 3);
     const y = WATERLINE + 4 + lane * 14;
     const pirate = isPirateTheme(this.playerState || loadPlayer());
+    const level = this.pressureLevel();
     const roll = Math.random();
     let key = forcedKey;
+    if (!key && level > 0 && roll < Math.min(0.62, level * 0.2)) {
+      const arm = Math.random();
+      key = pirate
+        ? arm < 0.4
+          ? 'ship-sub'
+          : arm < 0.7
+            ? 'ship-brig'
+            : 'ship-war'
+        : arm < 0.45
+          ? 'ship-sub'
+          : 'ship-war';
+    }
     if (!key) {
       if (pirate) {
         // cargo 26% / container 22% / war 22% / brig 14% / sub 16%
@@ -357,12 +385,14 @@ export class GameScene extends Phaser.Scene {
     const turnIn = turnsLeft > 0 ? Phaser.Math.Between(2800, 7000) : 999999;
 
     const canFireTorpedo = key === 'ship-war' || key === 'ship-sub' || key === 'ship-brig';
-    // Иногда грузовой запускает ракету (не раньше 3 сек в кадре)
+    // Иногда грузовой запускает ракету (не раньше 3 сек в кадре). После 5-й минуты чаще.
+    const missileChance = Math.min(0.8, 0.32 + this.pressureLevel() * 0.12);
     const mayLaunchMissile =
-      (key === 'ship-cargo' || key === 'ship-container') && Math.random() < 0.32;
+      (key === 'ship-cargo' || key === 'ship-container') && Math.random() < missileChance;
 
     const fireLo = key === 'ship-sub' ? 1500 : key === 'ship-brig' ? 1800 : 2000;
     const fireHi = key === 'ship-sub' ? 4000 : key === 'ship-brig' ? 4500 : 5000;
+    const rush = Math.max(0.4, 1 - this.pressureLevel() * 0.15);
 
     ship.setData({
       dir,
@@ -379,15 +409,80 @@ export class GameScene extends Phaser.Scene {
       turnsLeft,
       visibleMs: 0,
       fireAfterMs: canFireTorpedo
-        ? Phaser.Math.Between(fireLo, fireHi)
+        ? Math.round(Phaser.Math.Between(fireLo, fireHi) * rush)
         : mayLaunchMissile
-          ? Phaser.Math.Between(3000, 6500)
+          ? Math.round(Phaser.Math.Between(3000, 6500) * rush)
           : 0,
+      reloadMs: 0,
       hasFired: false,
       weapon: canFireTorpedo ? 'torpedo' : mayLaunchMissile ? 'missile' : null,
     });
     this.world.add(ship);
     this.ships.add(ship);
+  }
+
+  /** 0 до 1:00, затем 1, 2, 3… каждую минуту. */
+  pressureLevel() {
+    if (this.battleTimeMs < PRESSURE_START_MS) return 0;
+    return 1 + Math.floor((this.battleTimeMs - PRESSURE_START_MS) / PRESSURE_STEP_MS);
+  }
+
+  shipCap() {
+    const caps = [5, 7, 9, 11, 12];
+    return caps[Math.min(this.pressureLevel(), caps.length - 1)];
+  }
+
+  spawnDelayMs() {
+    const delays = [3000, 1800, 1200, 900, 700];
+    return delays[Math.min(this.pressureLevel(), delays.length - 1)];
+  }
+
+  /** Пауза между повторными залпами. На спокойном море повторных залпов нет. */
+  repeatFireMs() {
+    const gaps = [0, 4200, 2600, 1700, 1200];
+    return gaps[Math.min(this.pressureLevel(), gaps.length - 1)];
+  }
+
+  scheduleNextSpawn() {
+    this._spawnCall = this.time.delayedCall(this.spawnDelayMs(), () => {
+      if (this.gameOver) return;
+      if (!this.briefing && this.ships.countActive(true) < this.shipCap()) {
+        const dir = Math.random() < 0.5 ? 1 : -1;
+        this.spawnShip(dir > 0 ? -80 : W + 80, dir);
+      }
+      if (!this.gameOver) this.scheduleNextSpawn();
+    });
+  }
+
+  announcePressure(level) {
+    const player = this.playerState || loadPlayer();
+    const lines =
+      player.lang === 'en'
+        ? ['THEY CLOSE IN', 'THE STORM BUILDS', 'THE SEA HOLDS']
+        : player.lang === 'es'
+          ? ['CIERRAN EL CERCO', 'ARRECIA EL TEMPORAL', 'EL MAR NO SUELTA']
+          : ['КОЛЬЦО СЖИМАЕТСЯ', 'ШТОРМ КРЕПЧАЕТ', 'МОРЕ НЕ ОТПУСКАЕТ'];
+    const label = lines[Math.min(Math.max(level, 1), lines.length) - 1];
+    const popup = this.add
+      .text(W / 2, 86, label, {
+        fontFamily: this.hudFont || 'Segoe UI, system-ui, sans-serif',
+        fontSize: '28px',
+        color: '#ffd27a',
+        fontStyle: '700',
+        stroke: '#000',
+        strokeThickness: 5,
+      })
+      .setOrigin(0.5)
+      .setDepth(140);
+    this.tweens.add({
+      targets: popup,
+      y: 64,
+      alpha: 0,
+      delay: 1100,
+      duration: 800,
+      ease: 'Cubic.easeOut',
+      onComplete: () => popup.destroy(),
+    });
   }
 
   applyShipFacing(ship, key, dir) {
@@ -580,7 +675,7 @@ export class GameScene extends Phaser.Scene {
       .setDepth(150)
       .setVisible(false);
 
-    // Стрелки и «ГИРО» убраны — управление мышью / клавишами / гиро без кнопки на экране
+    // На мобильных контурах прицел ведут кнопки или гироскоп, выстрел — своя кнопка.
     this.buffLabel = this.add
       .text(W / 2, 72, '', {
         fontFamily: 'Segoe UI, system-ui, sans-serif',
@@ -671,7 +766,9 @@ export class GameScene extends Phaser.Scene {
     this.briefingLayer = null;
     this.playerState.hintSeen = true;
     savePlayer(this.playerState);
+    this.mobileLayer?.setVisible(true);
     sfx.unlock();
+    gameplayStart();
   }
 
   makeButton(x, y, label, onDown, width = 64) {
@@ -694,6 +791,143 @@ export class GameScene extends Phaser.Scene {
       this.pointerOverUi = false;
     });
     c.on('pointerdown', () => onDown());
+    return c;
+  }
+
+  drawMobileControls() {
+    if (!this.touchAim) return;
+    this.mobileAim = this.playerState.aimControl === 'gyro' ? 'gyro' : 'buttons';
+    const layer = this.add.container(0, 0).setDepth(140);
+    this.mobileLayer = layer;
+    this.steerIds = { left: null, right: null };
+    layer.add(this.makeFireButton(W - 86, H - 78));
+    if (this.mobileAim === 'buttons') {
+      this.addSteerButtons(layer);
+    } else {
+      this.gyro.enable().then((ok) => {
+        if (!this.scene?.isActive()) {
+          this.gyro.disable();
+          return;
+        }
+        if (ok || !this.mobileLayer?.active) return;
+        this.mobileAim = 'buttons';
+        this.addSteerButtons(this.mobileLayer);
+      });
+    }
+    if (this.briefing) layer.setVisible(false);
+  }
+
+  addSteerButtons(layer) {
+    layer.add(this.makeSteerButton(78, H - 78, 'left'));
+    layer.add(this.makeSteerButton(172, H - 78, 'right'));
+  }
+
+  makeFireButton(x, y) {
+    const pirate = isPirateTheme(this.playerState);
+    const c = this.add.container(x, y);
+    const g = this.add.graphics();
+    if (pirate) {
+      g.fillStyle(0x5a3014, 1);
+      g.fillCircle(0, 0, 42);
+      g.lineStyle(5, 0xe6c27a, 1);
+      g.strokeCircle(0, 0, 42);
+      g.fillStyle(0x3a2010, 1);
+      g.fillRoundedRect(-18, 8, 36, 14, 4);
+      g.fillStyle(0x24160c, 1);
+      g.beginPath();
+      g.moveTo(-9, 10);
+      g.lineTo(-7, -18);
+      g.lineTo(7, -18);
+      g.lineTo(9, 10);
+      g.closePath();
+      g.fillPath();
+      g.lineStyle(3, 0xe6c27a, 1);
+      g.strokeCircle(0, -18, 6);
+    } else {
+      g.fillStyle(0x0c1c28, 1);
+      g.fillCircle(0, 0, 42);
+      g.lineStyle(4, 0x9fd4ea, 1);
+      g.strokeCircle(0, 0, 42);
+      g.lineStyle(2, 0x3d6478, 1);
+      g.strokeCircle(0, 0, 33);
+      g.fillStyle(0xc42828, 1);
+      g.fillCircle(0, 0, 22);
+      g.fillStyle(0xffe0e0, 0.45);
+      g.fillCircle(-7, -7, 6);
+    }
+    c.add(g);
+    c.setSize(88, 88);
+    c.setInteractive(new Phaser.Geom.Circle(0, 0, 44), Phaser.Geom.Circle.Contains);
+    const press = (down) => {
+      c.setScale(down ? 0.94 : 1);
+      this.pointerOverUi = down;
+    };
+    c.on('pointerdown', (_pointer, _x, _y, event) => {
+      event?.stopPropagation?.();
+      press(true);
+      if (this.briefing) {
+        this.dismissBriefing();
+        return;
+      }
+      if (this.continueOpen || this.simPaused || this.gameOver) return;
+      this.tryFire();
+    });
+    c.on('pointerup', () => press(false));
+    c.on('pointerout', () => press(false));
+    c.on('pointerupoutside', () => press(false));
+    return c;
+  }
+
+  makeSteerButton(x, y, side) {
+    const pirate = isPirateTheme(this.playerState);
+    const c = this.add.container(x, y);
+    const g = this.add.graphics();
+    if (pirate) {
+      g.fillStyle(0x5a3014, 1);
+      g.fillCircle(0, 0, 34);
+      g.lineStyle(4, 0xe6c27a, 1);
+      g.strokeCircle(0, 0, 34);
+    } else {
+      g.fillStyle(0x102430, 0.92);
+      g.fillCircle(0, 0, 34);
+      g.lineStyle(3, 0x8ec8e8, 1);
+      g.strokeCircle(0, 0, 34);
+    }
+    const glyph = this.add
+      .text(0, -2, side === 'left' ? '‹' : '›', {
+        fontFamily: pirate ? 'Georgia, serif' : 'Segoe UI, system-ui, sans-serif',
+        fontSize: '42px',
+        color: pirate ? '#fff4d8' : '#d7f2ff',
+        fontStyle: '700',
+      })
+      .setOrigin(0.5);
+    c.add([g, glyph]);
+    c.setSize(72, 72);
+    c.setInteractive(new Phaser.Geom.Circle(0, 0, 36), Phaser.Geom.Circle.Contains);
+    const hold = (down, pointer) => {
+      if (down) {
+        this.steerIds[side] = pointer?.id ?? true;
+        if (side === 'left') this.holdLeft = true;
+        else this.holdRight = true;
+        this.pointerOverUi = true;
+        c.setScale(0.94);
+        return;
+      }
+      const id = pointer?.id;
+      if (id != null && this.steerIds[side] !== id && this.steerIds[side] !== true) return;
+      this.steerIds[side] = null;
+      if (side === 'left') this.holdLeft = false;
+      else this.holdRight = false;
+      this.pointerOverUi = this.holdLeft || this.holdRight;
+      c.setScale(1);
+    };
+    c.on('pointerdown', (pointer, _x, _y, event) => {
+      event?.stopPropagation?.();
+      hold(true, pointer);
+    });
+    c.on('pointerup', (pointer) => hold(false, pointer));
+    c.on('pointerout', (pointer) => hold(false, pointer));
+    c.on('pointerupoutside', (pointer) => hold(false, pointer));
     return c;
   }
 
@@ -723,29 +957,34 @@ export class GameScene extends Phaser.Scene {
         this.dismissBriefing();
         return;
       }
-      if (this.gameOver) return;
+      if (this.continueOpen || this.simPaused || this.gameOver) return;
       this.tryFire();
     });
     this.keys.R.on('down', () => {
+      if (this.continueOpen || this.simPaused) return;
       if (this.gameOver) this.goToMenu();
       else this.restart();
     });
 
     const canvas = this.game.canvas;
-    canvas.style.cursor = 'none';
-    this.input.setDefaultCursor('none');
+    this.hideBattleCursor();
 
     this._onMouseMove = (e) => {
-      if (this.gameOver || this.pointerOverUi) return;
+      if (this.touchAim || this.gameOver || this.continueOpen || this.pointerOverUi) return;
       const rect = canvas.getBoundingClientRect();
       if (rect.width <= 0) return;
+      if (document.pointerLockElement === canvas) {
+        this.nudgeAim(e.movementX * (W / rect.width));
+        return;
+      }
       const x = ((e.clientX - rect.left) / rect.width) * W;
       this.setAimX(x);
     };
-    canvas.addEventListener('mousemove', this._onMouseMove);
+    window.addEventListener('mousemove', this._onMouseMove);
 
     this.input.on('pointermove', (pointer) => {
-      if (this.gameOver || this.pointerOverUi) return;
+      if (this.touchAim || this.gameOver || this.pointerOverUi) return;
+      if (document.pointerLockElement === canvas) return;
       this.setAimX(pointer.x);
     });
 
@@ -753,26 +992,59 @@ export class GameScene extends Phaser.Scene {
       sfx.unlock();
       if (this.briefing) {
         this.dismissBriefing();
+        this.captureAim();
         return;
       }
+      if (this.continueOpen || this.simPaused) return;
       if (this.pointerOverUi) return;
       if (this.gameOver) {
         this.goToMenu();
         return;
       }
-      this.setAimX(pointer.x);
+      if (this.touchAim) return;
+      if (document.pointerLockElement !== canvas) this.setAimX(pointer.x);
       if (pointer.leftButtonDown()) this.tryFire();
+      this.captureAim();
     });
 
-    this.events.once('shutdown', () => this.teardownInput());
+    this.events.once('shutdown', () => {
+      this.teardownInput();
+      this._offPause?.();
+      this.continueLayer?.destroy(true);
+      gameplayStop();
+    });
+  }
+
+  hideBattleCursor() {
+    if (this.touchAim) return;
+    document.body.classList.add('sb-aim');
+    if (this.game?.canvas) this.game.canvas.style.cursor = 'none';
+    this.input?.setDefaultCursor('none');
+  }
+
+  showBattleCursor() {
+    document.body.classList.remove('sb-aim');
+    if (this.game?.canvas) this.game.canvas.style.cursor = 'default';
+    this.input?.setDefaultCursor('default');
+  }
+
+  captureAim() {
+    if (this.touchAim || this.gameOver || this.continueOpen || this.platformPaused) return;
+    const canvas = this.game?.canvas;
+    if (!canvas || document.pointerLockElement === canvas) return;
+    const request = canvas.requestPointerLock?.();
+    if (request && typeof request.catch === 'function') request.catch(() => {});
+  }
+
+  releaseAimCapture() {
+    const canvas = this.game?.canvas;
+    if (canvas && document.pointerLockElement === canvas) document.exitPointerLock?.();
   }
 
   teardownInput() {
-    const canvas = this.game?.canvas;
-    if (canvas && this._onMouseMove) {
-      canvas.removeEventListener('mousemove', this._onMouseMove);
-      canvas.style.cursor = 'default';
-    }
+    if (this._onMouseMove) window.removeEventListener('mousemove', this._onMouseMove);
+    this.releaseAimCapture();
+    this.showBattleCursor();
     this.gyro.disable();
   }
 
@@ -940,6 +1212,7 @@ export class GameScene extends Phaser.Scene {
     const heart = this.hearts[this.lives];
     this.lives += 1;
     if (heart?.active) {
+      this.tweens.killTweensOf(heart);
       heart.setVisible(true);
       heart.setAlpha(1);
       heart.setScale(0.4);
@@ -1461,6 +1734,9 @@ export class GameScene extends Phaser.Scene {
   endGame(reason) {
     if (this.gameOver) return;
     this.gameOver = true;
+    this.holdLeft = false;
+    this.holdRight = false;
+    this.mobileLayer?.setVisible(false);
     const player = loadPlayer();
     const text =
       reason ||
@@ -1471,14 +1747,16 @@ export class GameScene extends Phaser.Scene {
           : 'ИГРА ОКОНЧЕНА');
     this.gameOverText.setText(text);
     this.gameOverText.setVisible(true);
-    if (this.game.canvas) this.game.canvas.style.cursor = 'default';
+    this.releaseAimCapture();
+    this.showBattleCursor();
+    gameplayStop();
     this._menuCall = this.time.delayedCall(2200, () => this.goToMenu());
   }
 
   destroyedMessage() {
     const player = loadPlayer();
     const timeStr = formatDuration(this.battleTimeMs);
-    const earned = Math.floor(Math.max(0, this.score) / 200);
+    const earned = anchorsFromScore(this.score);
     const extra = earned > 0 ? `\n+${earned} ${anchorWord(player.lang, earned)}` : '';
     if (player.lang === 'en') {
       return `SHIP DESTROYED\nScore: ${this.score}\nTime: ${timeStr}${extra}`;
@@ -1496,8 +1774,115 @@ export class GameScene extends Phaser.Scene {
       this._menuCall.remove(false);
       this._menuCall = null;
     }
-    this.teardownInput();
-    this.scene.start('Menu', { score: this.score, timeMs: this.battleTimeMs });
+    this.simPaused = true;
+    gameplayStop();
+    const leave = () => {
+      if (!this.scene?.isActive()) return;
+      this.teardownInput();
+      this.scene.start('Menu', { score: this.score, timeMs: this.battleTimeMs });
+    };
+    showInterstitial().then(leave, leave);
+  }
+
+  onLivesGone() {
+    if (this.gameOver || this.continueOpen) return;
+    if (getContour().ads && !this.continueUsed) {
+      this.openContinueOffer();
+      return;
+    }
+    this.endGame(this.destroyedMessage());
+  }
+
+  openContinueOffer() {
+    this.simPaused = true;
+    this.continueOpen = true;
+    gameplayStop();
+    this.releaseAimCapture();
+    this.showBattleCursor();
+    const pirate = isPirateTheme(this.playerState);
+    const layer = this.add.container(0, 0).setDepth(240);
+    this.continueLayer = layer;
+    layer.add(this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.62));
+    if (pirate && this.textures.exists('panel')) {
+      layer.add(this.add.image(W / 2, H / 2, 'panel').setDisplaySize(640, 320));
+    } else {
+      layer.add(
+        this.add.rectangle(W / 2, H / 2, 560, 260, 0x0d1a24, 0.97).setStrokeStyle(2, 0x4a8ab0),
+      );
+    }
+    const font = pirate ? 'Georgia, "Palatino Linotype", serif' : 'Segoe UI, system-ui, sans-serif';
+    layer.add(
+      this.add
+        .text(W / 2, H / 2 - 58, t(this.playerState, 'adContinueTitle'), {
+          fontFamily: font,
+          fontSize: '22px',
+          color: pirate ? '#3a2208' : '#e8f4ff',
+          align: 'center',
+          lineSpacing: 6,
+        })
+        .setOrigin(0.5),
+    );
+    const yes = this.add
+      .rectangle(W / 2 - 110, H / 2 + 58, 180, 48, 0x2a6a4a, 1)
+      .setInteractive({ useHandCursor: true });
+    const no = this.add
+      .rectangle(W / 2 + 110, H / 2 + 58, 180, 48, 0x6a3030, 1)
+      .setInteractive({ useHandCursor: true });
+    const yesText = this.add
+      .text(W / 2 - 110, H / 2 + 58, t(this.playerState, 'adContinueYes'), {
+        fontFamily: font,
+        fontSize: '20px',
+        color: '#ffffff',
+        fontStyle: '700',
+      })
+      .setOrigin(0.5);
+    const noText = this.add
+      .text(W / 2 + 110, H / 2 + 58, t(this.playerState, 'adContinueNo'), {
+        fontFamily: font,
+        fontSize: '18px',
+        color: '#ffffff',
+      })
+      .setOrigin(0.5);
+    layer.add([yes, no, yesText, noText]);
+    yes.on('pointerdown', (pointer, _x, _y, event) => {
+      event?.stopPropagation?.();
+      this.acceptContinue();
+    });
+    no.on('pointerdown', (pointer, _x, _y, event) => {
+      event?.stopPropagation?.();
+      this.declineContinue();
+    });
+  }
+
+  acceptContinue() {
+    if (this.adBusy || !this.continueOpen) return;
+    this.adBusy = true;
+    showRewarded().then((ok) => {
+      this.adBusy = false;
+      if (!this.scene?.isActive()) return;
+      this.closeContinueOffer();
+      if (!ok) {
+        this.endGame(this.destroyedMessage());
+        return;
+      }
+      this.continueUsed = true;
+      this.simPaused = false;
+      this.hearts?.forEach((heart) => this.tweens.killTweensOf(heart));
+      for (let i = 0; i < 3; i += 1) this.gainLife();
+      this.hideBattleCursor();
+      gameplayStart();
+    });
+  }
+
+  declineContinue() {
+    this.closeContinueOffer();
+    this.endGame(this.destroyedMessage());
+  }
+
+  closeContinueOffer() {
+    this.continueOpen = false;
+    this.continueLayer?.destroy(true);
+    this.continueLayer = null;
   }
 
   destroyShip(ship) {
@@ -1581,34 +1966,59 @@ export class GameScene extends Phaser.Scene {
 
     const missile = this.add.container(startX, startY);
     missile.setDepth(58);
-    missile.setAngle(angle - 90); // graphics drawn pointing up
+    // Нос нарисован вверх. Поворот heading+90 направляет его по полёту, пламя остаётся сзади.
+    missile.setAngle(angle + 90);
 
-    const body = this.add.graphics();
-    body.fillStyle(0xf0f0f0, 1);
-    body.fillRoundedRect(-5, -22, 10, 36, 3);
-    body.fillStyle(0xc62828, 1);
-    body.fillTriangle(-5, -22, 5, -22, 0, -34);
-    body.fillStyle(0x37474f, 1);
-    body.fillRect(-7, 10, 4, 10);
-    body.fillRect(3, 10, 4, 10);
-    body.fillStyle(0xff9100, 1);
-    body.fillTriangle(-4, 14, 4, 14, 0, 28);
-    body.fillStyle(0xffe082, 0.9);
-    body.fillTriangle(-2, 14, 2, 14, 0, 22);
-    missile.add(body);
+    const pirate = isPirateTheme(this.playerState);
+    const cannonArt = pirate && this.textures.exists('cannonball');
+    if (cannonArt) {
+      const art = this.add.image(0, 0, 'cannonball');
+      // Центр чугунного ядра, пламя нарисовано вниз — позади полёта.
+      art.setOrigin(0.5, 0.31);
+      art.setScale(64 / (art.height * 0.53));
+      missile.add(art);
+    } else {
+      const body = this.add.graphics();
+      if (pirate) {
+        body.fillStyle(0xff6a00, 0.45);
+        body.fillCircle(0, 8, 16);
+        body.fillStyle(0xff9100, 0.9);
+        body.fillTriangle(-9, 2, 9, 2, 0, 24);
+        body.fillStyle(0xfff3c4, 0.95);
+        body.fillTriangle(-4, 2, 4, 2, 0, 16);
+        body.fillStyle(0x1a1a1a, 1);
+        body.fillCircle(0, 0, 9);
+        body.fillStyle(0x8a8a8a, 0.9);
+        body.fillCircle(-3, -3, 3);
+      } else {
+        body.fillStyle(0xf0f0f0, 1);
+        body.fillRoundedRect(-5, -22, 10, 36, 3);
+        body.fillStyle(0xc62828, 1);
+        body.fillTriangle(-5, -22, 5, -22, 0, -34);
+        body.fillStyle(0x37474f, 1);
+        body.fillRect(-7, 10, 4, 10);
+        body.fillRect(3, 10, 4, 10);
+        body.fillStyle(0xff9100, 1);
+        body.fillTriangle(-4, 14, 4, 14, 0, 28);
+        body.fillStyle(0xffe082, 0.9);
+        body.fillTriangle(-2, 14, 2, 14, 0, 22);
+      }
+      missile.add(body);
+    }
 
+    const tail = cannonArt ? 78 : pirate ? 16 : 22;
     let trail = null;
     if (this.textures.exists('ember')) {
       trail = this.add.particles(0, 0, 'ember', {
-        speed: { min: 20, max: 60 },
+        speed: { min: cannonArt ? 12 : pirate ? 30 : 20, max: cannonArt ? 40 : pirate ? 90 : 60 },
         angle: { min: 70, max: 110 },
-        lifespan: { min: 180, max: 360 },
-        scale: { start: 0.7, end: 0 },
-        alpha: { start: 0.9, end: 0 },
-        frequency: 16,
-        quantity: 2,
+        lifespan: { min: 180, max: cannonArt ? 280 : pirate ? 480 : 360 },
+        scale: { start: cannonArt ? 0.4 : pirate ? 1.1 : 0.7, end: 0 },
+        alpha: { start: cannonArt ? 0.55 : 0.9, end: 0 },
+        frequency: cannonArt ? 40 : pirate ? 12 : 16,
+        quantity: cannonArt ? 1 : pirate ? 3 : 2,
         follow: missile,
-        followOffset: { x: 0, y: 20 },
+        followOffset: { x: 0, y: tail },
         blendMode: 'ADD',
       });
       trail.setDepth(57);
@@ -1622,6 +2032,7 @@ export class GameScene extends Phaser.Scene {
       endY,
       hitChecked: false,
       trail,
+      tail,
       guaranteed: true,
     });
     this.missiles.add(missile);
@@ -1634,10 +2045,22 @@ export class GameScene extends Phaser.Scene {
       let p = missile.getData('progress') + delta / MISSILE_MS;
       missile.setData('progress', p);
       const t = Math.min(p, 1);
-      missile.x = Phaser.Math.Linear(missile.getData('startX'), missile.getData('endX'), t);
-      missile.y = Phaser.Math.Linear(missile.getData('startY'), missile.getData('endY'), t);
-      // Slight grow as it approaches
+      const startX = missile.getData('startX');
+      const startY = missile.getData('startY');
+      const endX = missile.getData('endX');
+      const endY = missile.getData('endY');
+      missile.x = Phaser.Math.Linear(startX, endX, t);
+      missile.y = Phaser.Math.Linear(startY, endY, t);
       missile.setScale(Phaser.Math.Linear(0.85, 1.25, t));
+      const trail = missile.getData('trail');
+      if (trail) {
+        const dx = endX - startX;
+        const dy = endY - startY;
+        const len = Math.hypot(dx, dy) || 1;
+        const tail = missile.getData('tail') || 18;
+        trail.followOffset.x = (-dx / len) * tail;
+        trail.followOffset.y = (-dy / len) * tail;
+      }
 
       if (p >= 1 && !missile.getData('hitChecked')) {
         missile.setData('hitChecked', true);
@@ -1658,11 +2081,12 @@ export class GameScene extends Phaser.Scene {
     this.loseLife();
     this.cameras.main.shake(160, 0.012);
     this.cameras.main.flash(140, 220, 40, 20);
-    if (this.lives <= 0) this.endGame(this.destroyedMessage());
+    if (this.lives <= 0) this.onLivesGone();
   }
 
   update(_t, delta) {
     this.updateSeaWaves(_t, delta);
+    if (this.simPaused || this.platformPaused) return;
     if (this.briefing) {
       this.applyAim(delta);
       return;
@@ -1671,6 +2095,11 @@ export class GameScene extends Phaser.Scene {
     if (!this.gameOver) {
       this.battleTimeMs += delta;
       if (this.timeLabel) this.timeLabel.setText(formatDuration(this.battleTimeMs));
+      const level = this.pressureLevel();
+      if (level > this.announcedLevel) {
+        this.announcedLevel = level;
+        this.announcePressure(level);
+      }
 
       let turn = 0;
       if (this.cursors.left.isDown || this.keys.A.isDown || this.holdLeft) turn -= 1;
@@ -1744,18 +2173,28 @@ export class GameScene extends Phaser.Scene {
 
       // Оружие: только после времени в видимой зоне
       const weapon = ship.getData('weapon');
-      if (weapon && !ship.getData('hasFired')) {
+      if (weapon) {
         const onScreen = ship.x >= 70 && ship.x <= W - 70;
-        if (onScreen) {
+        if (!onScreen) {
+          ship.setData('visibleMs', 0);
+        } else if (!ship.getData('hasFired')) {
           const visibleMs = ship.getData('visibleMs') + delta;
           ship.setData('visibleMs', visibleMs);
           if (visibleMs >= ship.getData('fireAfterMs')) {
             ship.setData('hasFired', true);
+            ship.setData('reloadMs', 0);
             if (weapon === 'missile') this.fireCargoMissile(ship);
             else this.fireEnemyTorpedo(ship);
           }
-        } else {
-          ship.setData('visibleMs', 0);
+        } else if (this.pressureLevel() > 0) {
+          const reloadMs = ship.getData('reloadMs') + delta;
+          if (reloadMs >= this.repeatFireMs()) {
+            ship.setData('reloadMs', 0);
+            if (weapon === 'missile') this.fireCargoMissile(ship);
+            else this.fireEnemyTorpedo(ship);
+          } else {
+            ship.setData('reloadMs', reloadMs);
+          }
         }
       }
 
@@ -1890,7 +2329,7 @@ export class GameScene extends Phaser.Scene {
     if (this.gameOver) return;
     this.loseLife();
     this.cameras.main.flash(120, 180, 30, 30);
-    if (this.lives <= 0) this.endGame(this.destroyedMessage());
+    if (this.lives <= 0) this.onLivesGone();
   }
 
   resolveImpact(torpedo) {

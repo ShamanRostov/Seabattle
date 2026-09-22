@@ -19,9 +19,9 @@ export const THEMES = {
 };
 
 export const GAME_TITLE = {
-  ru: 'Морской бой',
-  en: 'Sea Battle',
-  es: 'Batalla Naval',
+  ru: 'Кильватер',
+  en: 'Keelwater',
+  es: 'Keelwater',
 };
 
 /** Все строки интерфейса — без смеси языков */
@@ -63,6 +63,16 @@ export const STR = {
     es: 'Solo letras, números y - _',
   },
   notEnough: { ru: 'Не хватает якорей', en: 'Not enough anchors', es: 'Anclas insuficientes' },
+  purchaseFail: {
+    ru: 'Покупка не завершена',
+    en: 'Purchase was not completed',
+    es: 'La compra no se completó',
+  },
+  purchaseWait: {
+    ru: 'Покупка сейчас недоступна',
+    en: 'Purchases are unavailable',
+    es: 'Las compras no están disponibles',
+  },
   shopTitle: { ru: 'Магазин якорей', en: 'Anchor Shop', es: 'Tienda de anclas' },
   shopHint: {
     ru: 'Демо-покупки (оплата позже)',
@@ -88,6 +98,19 @@ export const STR = {
   monthly: { ru: 'Месяц', en: 'Monthly', es: 'Mes' },
   language: { ru: 'Язык', en: 'Language', es: 'Idioma' },
   sound: { ru: 'Звук', en: 'Sound', es: 'Sonido' },
+  music: { ru: 'Музыка', en: 'Music', es: 'Música' },
+  musicPick: { ru: 'Своя мелодия', en: 'Your track', es: 'Tu música' },
+  musicStock: { ru: 'Стандарт', en: 'Default', es: 'Estándar' },
+  musicBad: { ru: 'Этот файл не читается', en: 'That file could not be read', es: 'No se pudo leer el archivo' },
+  musicBig: { ru: 'Файл больше 20 МБ', en: 'File is over 20 MB', es: 'El archivo pesa más de 20 MB' },
+  aimControl: { ru: 'Управление', en: 'Controls', es: 'Control' },
+  aimButtons: { ru: 'Кнопки', en: 'Buttons', es: 'Botones' },
+  aimGyro: { ru: 'Гироскоп', en: 'Tilt', es: 'Giroscopio' },
+  gyroDenied: {
+    ru: 'Гироскоп недоступен',
+    en: 'Tilt is not available',
+    es: 'El giroscopio no está disponible',
+  },
   on: { ru: 'ВКЛ', en: 'ON', es: 'SÍ' },
   off: { ru: 'ВЫКЛ', en: 'OFF', es: 'NO' },
   you: { ru: 'Вы', en: 'You', es: 'Tú' },
@@ -116,6 +139,39 @@ export const STR = {
     en: 'Click to start',
     es: 'Pulse para empezar',
   },
+  prizes: { ru: 'Призы', en: 'Prizes', es: 'Premios' },
+  prizeEmpty: { ru: 'Приз объявим позже', en: 'Prize to be announced', es: 'Premio por anunciar' },
+  subChecking: { ru: 'Проверяем подписку…', en: 'Checking subscription…', es: 'Comprobando la suscripción…' },
+  subTitle: { ru: 'Нужна подписка', en: 'Subscription required', es: 'Hace falta suscripción' },
+  subBody: {
+    ru: 'В бой пускаем только с оплаченной подпиской. За каждый день, когда вы заходите в игру, начисляем 20 якорей.',
+    en: 'Battle opens only with an active subscription. Each day you enter the game you receive 20 anchors.',
+    es: 'La batalla se abre solo con la suscripción pagada. Cada día que entras recibes 20 anclas.',
+  },
+  subButton: { ru: 'Оформить подписку', en: 'Subscribe', es: 'Suscribirse' },
+  subRetry: { ru: 'Проверить снова', en: 'Check again', es: 'Comprobar de nuevo' },
+  subWait: {
+    ru: 'Подписка пока не активна',
+    en: 'Subscription is not active yet',
+    es: 'La suscripción aún no está activa',
+  },
+  subDailyNote: {
+    ru: 'Якоря приходят с подпиской: 20 в день, когда вы заходите в игру.',
+    en: 'Anchors come with the subscription: 20 a day when you enter the game.',
+    es: 'Las anclas vienen con la suscripción: 20 al día cuando entras.',
+  },
+  adEntryTitle: { ru: 'Не хватает якорей', en: 'Not enough anchors', es: 'No hay suficientes anclas' },
+  adEntryButton: { ru: 'Ролик за вход', en: 'Video for a battle', es: 'Vídeo para entrar' },
+  adShop: { ru: 'Ролик · +10 якорей', en: 'Video · +10 anchors', es: 'Vídeo · +10 anclas' },
+  adShopDone: { ru: 'Сегодня ролик уже посмотрен', en: 'Today’s video is already used', es: 'El vídeo de hoy ya se usó' },
+  adFail: { ru: 'Ролик не загрузился', en: 'The video did not load', es: 'El vídeo no se cargó' },
+  adContinueTitle: {
+    ru: 'Жизни кончились.\nДосмотрите ролик — и получите ещё 3.',
+    en: 'No lives left.\nWatch a video to get 3 more.',
+    es: 'No quedan vidas.\nMira un vídeo y recibe 3 más.',
+  },
+  adContinueYes: { ru: '3 жизни', en: '3 lives', es: '3 vidas' },
+  adContinueNo: { ru: 'Закончить бой', en: 'End battle', es: 'Terminar' },
 };
 
 export const PORTRAITS_CLASSIC = [
@@ -358,6 +414,18 @@ export const ANCHOR_PACKS = [
 
 export const RENAME_COST = 25;
 export const GAME_COST = 10;
+/**
+ * Очки боя на один якорь.
+ * Обычная партия живёт около 7 минут и приносит ~10 000 очков:
+ * ~6 попаданий в минуту по ~250 минус цена выстрелов.
+ * 10 000 / 1400 ≈ 7 якорей. Короткий бой на 3 минуты — около 2,
+ * удачный на 15 минут — около 18.
+ */
+export const SCORE_PER_ANCHOR = 1400;
+
+export function anchorsFromScore(score) {
+  return Math.floor(Math.max(0, Number(score) || 0) / SCORE_PER_ANCHOR);
+}
 
 const defaultState = () => ({
   name: '',
@@ -370,9 +438,19 @@ const defaultState = () => ({
   equippedPortrait: 'default',
   ownedPortraits: ['default', 'cabin'],
   soundOn: true,
+  musicOn: true,
+  customMusicName: '',
+  aimControl: 'buttons',
   hintSeen: false,
   lang: 'ru',
+  langManual: false,
+  updatedAt: 0,
+  yandexTokens: [],
   daily: {}, // { 'YYYY-MM-DD': bestScoreThatDay }
+  subAnchorDay: '',
+  entryAdDay: '',
+  entryAdCount: 0,
+  shopAdDay: '',
 });
 
 function todayKey() {
@@ -437,7 +515,10 @@ export function loadPlayer() {
     if (!raw) return defaultState();
     const parsed = { ...defaultState(), ...JSON.parse(raw) };
     if (!LANGS.includes(parsed.lang)) parsed.lang = 'ru';
+    if (typeof parsed.langManual !== 'boolean') parsed.langManual = false;
+    if (!Array.isArray(parsed.yandexTokens)) parsed.yandexTokens = [];
     if (!THEME_IDS.includes(parsed.visualTheme)) parsed.visualTheme = 'classic';
+    if (parsed.aimControl !== 'gyro') parsed.aimControl = 'buttons';
     if (!Array.isArray(parsed.ownedPortraits) || !parsed.ownedPortraits.length) {
       parsed.ownedPortraits = ['default', 'cabin'];
     }
@@ -458,8 +539,34 @@ export function loadPlayer() {
   }
 }
 
+let saveHook = null;
+
+/** Площадка подписывается, чтобы унести прогресс на сервер после локальной записи. */
+export function onPlayerSaved(fn) {
+  saveHook = fn;
+}
+
+/** Более новое облачное сохранение Яндекса заменяет локальное. */
+export function adoptCloud(remote) {
+  const local = loadPlayer();
+  const remoteAt = Number(remote?.updatedAt) || 0;
+  if (!remote || typeof remote.anchors !== 'number' || remoteAt <= (Number(local.updatedAt) || 0)) {
+    return local;
+  }
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(remote));
+  const next = loadPlayer();
+  savePlayer(next);
+  return next;
+}
+
 export function savePlayer(state) {
+  state.updatedAt = Date.now();
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  try {
+    saveHook?.(state);
+  } catch {
+    /* синхронизация не должна ронять игру */
+  }
 }
 
 export function getRank(careerScore) {
@@ -493,7 +600,7 @@ export function submitRunScore(state, score, timeMs = 0) {
     daily[d] = { score: prev, timeMs: 0 };
   }
   next.daily = daily;
-  const earned = Math.floor(safeScore / 200);
+  const earned = anchorsFromScore(safeScore);
   next.anchors = (next.anchors || 0) + earned;
   savePlayer(next);
   return { state: next, earnedAnchors: earned };
@@ -504,6 +611,64 @@ export function tryStartGame(state) {
   const next = { ...state, anchors: state.anchors - GAME_COST };
   savePlayer(next);
   return next;
+}
+
+/** Календарный день игрока: якоря подписки и лимит роликов не завязаны на UTC. */
+function localDayKey() {
+  const d = new Date();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${month}-${day}`;
+}
+
+export const SUB_DAILY_ANCHORS = 20;
+export const ENTRY_AD_DAILY_LIMIT = 3;
+export const SHOP_AD_ANCHORS = 10;
+
+export function claimSubAnchors(state) {
+  const day = localDayKey();
+  if (state.subAnchorDay === day) return { state, granted: 0 };
+  const next = {
+    ...state,
+    subAnchorDay: day,
+    anchors: (state.anchors || 0) + SUB_DAILY_ANCHORS,
+  };
+  savePlayer(next);
+  return { state: next, granted: SUB_DAILY_ANCHORS };
+}
+
+export function entryAdsLeft(state) {
+  if (state.entryAdDay !== localDayKey()) return ENTRY_AD_DAILY_LIMIT;
+  return Math.max(0, ENTRY_AD_DAILY_LIMIT - (state.entryAdCount || 0));
+}
+
+/** Ролик оплачивает вход: начисляем стоимость боя, затем её спишет tryStartGame. */
+export function consumeEntryAd(state) {
+  const day = localDayKey();
+  const count = state.entryAdDay === day ? (state.entryAdCount || 0) + 1 : 1;
+  const next = {
+    ...state,
+    entryAdDay: day,
+    entryAdCount: count,
+    anchors: (state.anchors || 0) + GAME_COST,
+  };
+  savePlayer(next);
+  return next;
+}
+
+export function shopAdAvailable(state) {
+  return state.shopAdDay !== localDayKey();
+}
+
+export function claimShopAd(state) {
+  if (!shopAdAvailable(state)) return { state, granted: 0 };
+  const next = {
+    ...state,
+    shopAdDay: localDayKey(),
+    anchors: (state.anchors || 0) + SHOP_AD_ANCHORS,
+  };
+  savePlayer(next);
+  return { state: next, granted: SHOP_AD_ANCHORS };
 }
 
 export function buildLeaderboard(state, mode = 'daily') {
@@ -748,6 +913,7 @@ export function getThemeAssetPaths(themeId) {
       'ship-brig': `${base}/ship-brig.png`,
       explosion: `${base}/explosion.png`,
       torpedo: `${base}/torpedo.png`,
+      cannonball: `${base}/cannonball.png`,
       shark: `${base}/shark.png`,
       'icon-anchor': `${base}/icon-anchor.png`,
       crate: `${base}/crate.png`,

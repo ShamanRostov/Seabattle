@@ -5,7 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:beeline": "vite --mode beeline",
+    "dev:megafon": "vite --mode megafon",
+    "dev:yandex": "vite --mode yandex",
+    "dev:crazy": "vite --mode crazygames",
     "build": "vite build",
+    "build:beeline": "vite build --mode beeline",
+    "build:megafon": "vite build --mode megafon",
+    "build:yandex": "vite build --mode yandex",
+    "build:crazy": "vite build --mode crazygames",
     "preview": "vite preview"
   },
   "dependencies": {

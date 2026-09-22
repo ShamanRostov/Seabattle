@@ -2,8 +2,15 @@ import Phaser from 'phaser';
 import { BootScene } from './scenes/BootScene.js';
 import { MenuScene } from './scenes/MenuScene.js';
 import { GameScene } from './scenes/GameScene.js';
+import { getContour } from './contour/contour.js';
+import { bootPlatform } from './platform/platform.js';
+import { preloadSfx } from './audio/sfx.js';
 
-const game = new Phaser.Game({
+preloadSfx();
+
+if (import.meta.env.DEV) window.__seabattleContour = () => getContour().id;
+
+const gameConfig = {
   type: Phaser.AUTO,
   parent: 'game',
   backgroundColor: '#05080c',
@@ -14,6 +21,8 @@ const game = new Phaser.Game({
     height: 540,
   },
   scene: [BootScene, MenuScene, GameScene],
-});
+};
 
-window.game = game;
+bootPlatform().then(() => {
+  window.game = new Phaser.Game(gameConfig);
+});

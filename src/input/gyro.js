@@ -1,9 +1,11 @@
+/** Разрешение iOS живёт на вкладке: второй вызов без жеста не должен спрашивать снова. */
+let sharedPermission = 'unknown';
+
 /**
- * Device tilt → horizontal aim delta.
- * Returns null if unsupported / no permission / no data yet.
- * axis: 'gamma' (tilt left-right in portrait) or 'beta' (forward-back) for A/B test.
+ * Наклон телефона → горизонтальный вклад в прицел.
+ * axis: 'screen' (лево-право относительно экрана), 'gamma' или 'beta'.
  */
-export function createGyroAim({ axis = 'gamma', deadzone = 4, sensitivity = 1.8 } = {}) {
+export function createGyroAim({ axis = 'screen', deadzone = 4, sensitivity = 1.8 } = {}) {
   const state = {
     enabled: false,
     available: typeof window !== 'undefined' && 'DeviceOrientationEvent' in window,
@@ -13,27 +15,36 @@ export function createGyroAim({ axis = 'gamma', deadzone = 4, sensitivity = 1.8 
   };
 
   const onOrient = (e) => {
-    const raw = axis === 'beta' ? e.beta : e.gamma;
+    const raw = readTilt(e, state.axis);
     if (raw == null || Number.isNaN(raw)) return;
     const clamped = PhaserMathClamp(raw, -45, 45);
     state.value = Math.abs(clamped) < deadzone ? 0 : clamped * sensitivity;
   };
 
-  async function enable() {
+  async function enable({ gesture = false } = {}) {
     if (!state.available) return false;
     try {
       const DOE = window.DeviceOrientationEvent;
-      if (typeof DOE?.requestPermission === 'function') {
+      const needsPrompt = typeof DOE?.requestPermission === 'function';
+      if (needsPrompt && sharedPermission !== 'granted') {
+        if (!gesture) return false;
         const result = await DOE.requestPermission();
-        state.permission = result;
-        if (result !== 'granted') return false;
-      } else {
-        state.permission = 'granted';
+        sharedPermission = result === 'granted' ? 'granted' : 'denied';
+        if (sharedPermission !== 'granted') {
+          state.permission = 'denied';
+          return false;
+        }
+      } else if (!needsPrompt) {
+        sharedPermission = 'granted';
       }
-      window.addEventListener('deviceorientation', onOrient, true);
-      state.enabled = true;
+      state.permission = 'granted';
+      if (!state.enabled) {
+        window.addEventListener('deviceorientation', onOrient, true);
+        state.enabled = true;
+      }
       return true;
     } catch {
+      sharedPermission = 'denied';
       state.permission = 'denied';
       return false;
     }
@@ -61,4 +72,18 @@ export function createGyroAim({ axis = 'gamma', deadzone = 4, sensitivity = 1.8 
 
 function PhaserMathClamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
+}
+
+/** Лево-право относительно того, как телефон лежит в руке. */
+function readTilt(e, axis) {
+  if (axis === 'beta') return e.beta;
+  if (axis === 'gamma') return e.gamma;
+  const angle =
+    (typeof screen !== 'undefined' && screen.orientation && screen.orientation.angle) ||
+    window.orientation ||
+    0;
+  if (angle === 90) return e.beta;
+  if (angle === -90 || angle === 270) return e.beta == null ? null : -e.beta;
+  if (angle === 180) return e.gamma == null ? null : -e.gamma;
+  return e.gamma;
 }

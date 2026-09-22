@@ -15,7 +15,6 @@ import {
   getThemeId,
   isPirateTheme,
   setVisualTheme,
-  GAME_TITLE,
   ANCHOR_PACKS,
   RENAME_COST,
   GAME_COST,
@@ -23,9 +22,28 @@ import {
   perkText,
   formatDuration,
   anchorWord,
+  claimSubAnchors,
+  entryAdsLeft,
+  consumeEntryAd,
+  shopAdAvailable,
+  claimShopAd,
+  SUB_DAILY_ANCHORS,
+  SHOP_AD_ANCHORS,
 } from '../data/playerStore.js';
 import { validatePlayerName } from '../data/nameFilter.js';
-import { sfx } from '../audio/sfx.js';
+import { sfx, setMusicOn, useCustomMusic, resetCustomMusic } from '../audio/sfx.js';
+import { createGyroAim } from '../input/gyro.js';
+import { contourTitle, getContour, operatorName } from '../contour/contour.js';
+import { checkSubscription, requestSubscribe } from '../contour/subscription.js';
+import { loadPrizes } from '../contour/prizes.js';
+import {
+  markGameReady,
+  portalCurrencyIcon,
+  purchaseProduct,
+  showRewarded,
+  takeStartupAnchors,
+  yandexProduct,
+} from '../platform/platform.js';
 
 const W = 960;
 const H = 540;
@@ -44,6 +62,7 @@ export class MenuScene extends Phaser.Scene {
 
   create() {
     this.player = loadPlayer();
+    document.documentElement.lang = this.player.lang || 'ru';
     if (this.lastScore != null && Number.isFinite(this.lastScore)) {
       const result = submitRunScore(this.player, this.lastScore, this.lastTimeMs || 0);
       this.player = result.state;
@@ -58,15 +77,139 @@ export class MenuScene extends Phaser.Scene {
     this.input.setDefaultCursor('default');
 
     this.drawBackdrop();
+    if (getContour().subscription) {
+      this.drawSubscribeWall('check');
+      checkSubscription().then((sub) => {
+        if (!this.scene.isActive()) return;
+        this.enterIfSubscribed(sub.active);
+      });
+      return;
+    }
+    this.revealMenu(false);
+    this.preloadPortalCurrency();
+    const granted = takeStartupAnchors();
+    if (granted > 0) {
+      this.time.delayedCall(500, () => {
+        if (!this.scene.isActive()) return;
+        this.toast(`+${granted} ${anchorWord(this.player.lang, granted)}`);
+      });
+    }
+  }
+
+  preloadPortalCurrency() {
+    const url = portalCurrencyIcon();
+    if (!url || this.textures.exists('portal-currency')) return;
+    this.load.image('portal-currency', url);
+    this.load.once('complete', () => {
+      if (this.scene.isActive() && this.panelKind === 'shop') this.openPanel('shop');
+    });
+    this.load.start();
+  }
+
+  enterIfSubscribed(active) {
+    this.destroyWall();
+    if (!active) {
+      this.drawSubscribeWall('locked');
+      markGameReady();
+      return;
+    }
+    const claim = claimSubAnchors(this.player);
+    this.player = claim.state;
+    this.revealMenu(claim.granted > 0);
+  }
+
+  revealMenu(granted) {
     this.drawHeader();
     this.drawMainButtons();
-
     const reopen =
       this.openPanelOnStart || this.game.registry.get('menuOpenPanel') || null;
     if (reopen) {
       this.game.registry.remove('menuOpenPanel');
       this.time.delayedCall(0, () => this.openPanel(reopen));
     }
+    if (granted) {
+      this.time.delayedCall(400, () => {
+        this.toast(`+${SUB_DAILY_ANCHORS} ${anchorWord(this.player.lang, SUB_DAILY_ANCHORS)}`);
+      });
+    }
+    markGameReady();
+  }
+
+  destroyWall() {
+    this.wallGroup?.destroy(true);
+    this.wallGroup = null;
+  }
+
+  drawSubscribeWall(mode) {
+    this.destroyWall();
+    const group = this.add.container(0, 0).setDepth(40);
+    this.wallGroup = group;
+    const pirate = this.pirate;
+    const font = pirate ? 'Georgia, "Palatino Linotype", serif' : 'Segoe UI, system-ui, sans-serif';
+    group.add(this.add.rectangle(W / 2, H / 2, W, H, pirate ? 0x1a0c04 : 0x02070c, 0.72));
+    if (mode === 'check') {
+      group.add(
+        this.add
+          .text(W / 2, H / 2, t(this.player, 'subChecking'), {
+            fontFamily: font,
+            fontSize: '28px',
+            color: pirate ? '#fff4d8' : '#e8f4ff',
+          })
+          .setOrigin(0.5),
+      );
+      return;
+    }
+    const op = operatorName(this.player.lang);
+    group.add(
+      this.add
+        .text(W / 2, 168, t(this.player, 'subTitle'), {
+          fontFamily: font,
+          fontSize: '36px',
+          color: pirate ? '#fff4d8' : '#e8f4ff',
+          fontStyle: '700',
+        })
+        .setOrigin(0.5),
+    );
+    group.add(
+      this.add
+        .text(W / 2, 248, `${op}\n${t(this.player, 'subBody')}`, {
+          fontFamily: font,
+          fontSize: '18px',
+          color: pirate ? '#f3e2c0' : '#c5dced',
+          align: 'center',
+          wordWrap: { width: 560 },
+          lineSpacing: 6,
+        })
+        .setOrigin(0.5),
+    );
+    const subscribe = this.makeHitButton(
+      W / 2,
+      360,
+      t(this.player, 'subButton'),
+      () => this.onSubscribe(),
+      320,
+      54,
+      true,
+    );
+    const retry = this.makeHitButton(W / 2, 430, t(this.player, 'subRetry'), () => {
+      this.drawSubscribeWall('check');
+      checkSubscription().then((sub) => {
+        if (!this.scene.isActive()) return;
+        this.enterIfSubscribed(sub.active);
+      });
+    }, 280, 46, false);
+    group.add([subscribe.bg, subscribe.text, retry.bg, retry.text]);
+  }
+
+  onSubscribe() {
+    if (this.subBusy) return;
+    this.subBusy = true;
+    requestSubscribe().then((sub) => {
+      this.subBusy = false;
+      if (!this.scene.isActive()) return;
+      if (sub.active) this.enterIfSubscribed(true);
+      else this.toast(t(this.player, 'subWait'));
+    });
   }
 
   drawBackdrop() {
@@ -87,10 +230,11 @@ export class MenuScene extends Phaser.Scene {
       g.fillRect(0, H * 0.58, W, H * 0.42);
     }
 
+    document.title = contourTitle(this.player.lang);
     const titleColor = this.pirate ? '#fff4d8' : '#e8f4ff';
     const titleStroke = this.pirate ? '#3a2208' : '#041018';
     this.titleText = this.add
-      .text(W / 2, 40, GAME_TITLE[this.player.lang] || GAME_TITLE.ru, {
+      .text(W / 2, 40, contourTitle(this.player.lang), {
         fontFamily: this.pirate
           ? 'Georgia, "Palatino Linotype", serif'
           : 'Georgia, "Times New Roman", serif',
@@ -152,23 +296,25 @@ export class MenuScene extends Phaser.Scene {
 
   drawMainButtons() {
     const items = [
-      { key: 'profile', label: 'profile', y: 268 },
-      { key: 'shop', label: 'shop', y: 338 },
-      { key: 'rating', label: 'rating', y: 408 },
-      { key: 'settings', label: 'settings', y: 478 },
+      { key: 'profile', label: 'profile' },
+      { key: 'shop', label: 'shop' },
+      { key: 'rating', label: 'rating' },
     ];
+    if (getContour().prizes) items.push({ key: 'prizes', label: 'prizes' });
+    items.push({ key: 'settings', label: 'settings' });
+    const ys = items.length > 4 ? [256, 310, 364, 418, 472] : [268, 338, 408, 478];
+    const height = items.length > 4 ? 46 : 50;
 
-    // В бой — с ценой в якорях
     this.makePlayButton(W / 2, 188);
 
-    items.forEach((item) => {
+    items.forEach((item, i) => {
       this.makeHitButton(
         W / 2,
-        item.y,
+        ys[i],
         t(this.player, item.label),
         () => this.openPanel(item.key),
         280,
-        50,
+        height,
         false,
       );
     });
@@ -235,14 +381,7 @@ export class MenuScene extends Phaser.Scene {
     bg.on('pointerdown', () => {
       sfx.unlock();
       sfx.ui();
-      const next = tryStartGame(this.player);
-      if (!next) {
-        this.needAnchors();
-        return;
-      }
-      this.player = next;
-      this.refreshHeader();
-      this.scene.start('Game');
+      this.beginBattle();
     });
   }
 
@@ -316,6 +455,7 @@ export class MenuScene extends Phaser.Scene {
       this.panel.destroy(true);
       this.panel = null;
     }
+    this.panelKind = null;
     this.closeNameEditor();
     this.input.setDefaultCursor('default');
   }
@@ -332,7 +472,7 @@ export class MenuScene extends Phaser.Scene {
     this.panel.add(dim);
 
     const cardW = kind === 'rating' && pirate ? 780 : 720;
-    const cardH = kind === 'rating' && pirate ? 460 : 420;
+    const cardH = kind === 'rating' && pirate ? 460 : kind === 'settings' ? 468 : 420;
 
     if (pirate && this.textures.exists('panel')) {
       // рамка толще пергамента — контент держим с запасом
@@ -392,8 +532,11 @@ export class MenuScene extends Phaser.Scene {
     close.on('pointerdown', () => this.clearPanel());
     this.panel.add(close);
 
+    this.panelKind = kind;
     if (kind === 'profile') this.buildProfilePanel();
     else if (kind === 'shop') this.buildShopPanel();
+    else if (kind === 'prizes') this.buildPrizesPanel();
+    else if (kind === 'entryAd') this.buildEntryAdPanel();
     else if (kind === 'optics') {
       // совместимость: оптика теперь вкладка магазина
       this.shopTab = 'optics';
@@ -778,6 +921,30 @@ export class MenuScene extends Phaser.Scene {
 
     const listTop = tabY + 52;
     const listBottom = b.bottom - 10;
+    const contour = getContour();
+    if (contour.sdk === 'yandex') {
+      this.buildYandexAnchorShop(listTop, listBottom);
+      return;
+    }
+    if (contour.ads) {
+      this.buildAnchorAdOffer(listTop);
+      return;
+    }
+    if (contour.subscription) {
+      this.panel.add(
+        this.add
+          .text(W / 2, (listTop + listBottom) / 2, t(this.player, 'subDailyNote'), {
+            fontFamily: pirate ? 'Georgia, serif' : 'Segoe UI, system-ui, sans-serif',
+            fontSize: '22px',
+            color: pirate ? '#5a3410' : '#d5e8f6',
+            align: 'center',
+            wordWrap: { width: b.width - 24 },
+            lineSpacing: 8,
+          })
+          .setOrigin(0.5),
+      );
+      return;
+    }
     const n = ANCHOR_PACKS.length;
     const step = (listBottom - listTop) / n;
     const rowH = Math.min(pirate ? 68 : 74, step - 6);
@@ -1501,32 +1668,42 @@ export class MenuScene extends Phaser.Scene {
   buildSettingsPanel() {
     this.addPanelTitle('settings');
     const pirate = this.pirate;
+    const mobileAim = getContour().mobile;
+    const tight = mobileAim && pirate;
     const b = this.panelBounds();
     const labelColor = pirate ? '#5a3410' : '#9ec9e8';
     const labelStyle = {
       fontFamily: pirate ? 'Georgia, serif' : 'Segoe UI, system-ui, sans-serif',
-      fontSize: pirate ? '20px' : '18px',
+      fontSize: pirate ? '18px' : '18px',
       color: labelColor,
       fontStyle: '700',
     };
+    const wood = pirate ? 6 : 0;
+    const gap = tight ? 8 : pirate ? 16 : 18;
+    let y = b.top + (tight ? 28 : pirate ? 42 : 40);
 
-    const bodyTop = b.top + 38;
-    const bodyBottom = b.bottom - 8;
-    const sectionH = (bodyBottom - bodyTop) / 3;
+    const label = (key) => {
+      this.panel.add(this.add.text(W / 2, y, t(this.player, key), labelStyle).setOrigin(0.5));
+      y += tight ? 20 : pirate ? 24 : 26;
+    };
+    const row = (height) => {
+      const visual = height + wood;
+      const center = y + visual / 2;
+      y = center + visual / 2 + gap;
+      return center;
+    };
 
-    // Visual
-    let y = bodyTop + sectionH * 0.18;
-    this.panel.add(this.add.text(W / 2, y, t(this.player, 'visualMode'), labelStyle).setOrigin(0.5));
-    y += 38;
+    label('visualMode');
+    const themeY = row(tight ? 32 : 36);
     const themes = [
-      { id: 'classic', label: t(this.player, 'themeClassic'), x: W / 2 - 130 },
-      { id: 'pirate', label: t(this.player, 'themePirate'), x: W / 2 + 130 },
+      { id: 'classic', label: t(this.player, 'themeClassic'), x: W / 2 - 118 },
+      { id: 'pirate', label: t(this.player, 'themePirate'), x: W / 2 + 118 },
     ];
     themes.forEach((th) => {
       const active = getThemeId(this.player) === th.id;
       this.addPanelHitButton(
         th.x,
-        y,
+        themeY,
         th.label,
         () => {
           if (getThemeId(this.player) === th.id) return;
@@ -1534,49 +1711,78 @@ export class MenuScene extends Phaser.Scene {
           this.game.registry.set('menuOpenPanel', 'settings');
           this.scene.start('Boot');
         },
-        230,
-        44,
+        200,
+        tight ? 32 : 36,
         active ? 0x2a6a4a : pirate ? 0xc4a06a : 0x1a3448,
-        pirate ? '17px' : '16px',
+        '15px',
+        { compact: true },
       );
     });
 
-    // Language
-    y = bodyTop + sectionH * 1.18;
-    this.panel.add(this.add.text(W / 2, y, t(this.player, 'language'), labelStyle).setOrigin(0.5));
-    y += 38;
+    label('language');
+    const langH = tight ? 30 : 34;
+    const langY = row(langH);
     const langs = [
-      { code: 'ru', label: 'Русский', x: W / 2 - 160 },
-      { code: 'en', label: 'English', x: W / 2 },
-      { code: 'es', label: 'Español', x: W / 2 + 160 },
+      { code: 'ru', label: 'Русский' },
+      { code: 'en', label: 'English' },
+      { code: 'es', label: 'Español' },
     ];
-    langs.forEach((L) => {
+    const langW = 148;
+    const langStep = langW + wood + 16;
+    langs.forEach((L, i) => {
       const active = this.player.lang === L.code;
       this.addPanelHitButton(
-        L.x,
-        y,
+        W / 2 + (i - 1) * langStep,
+        langY,
         L.label,
         () => {
           this.player.lang = L.code;
+          this.player.langManual = true;
           savePlayer(this.player);
           this.scene.restart({ openPanel: 'settings' });
         },
-        140,
-        42,
+        langW,
+        langH,
         active ? 0x2a6a4a : pirate ? 0xc4a06a : 0x1a3448,
-        pirate ? '17px' : '16px',
+        '15px',
+        { compact: true },
       );
     });
 
-    // Sound
-    y = bodyTop + sectionH * 2.35;
+    if (mobileAim) {
+      label('aimControl');
+      const aimH = tight ? 30 : 34;
+      const aimY = row(aimH);
+      const aim = this.player.aimControl === 'gyro' ? 'gyro' : 'buttons';
+      [
+        { id: 'buttons', text: t(this.player, 'aimButtons'), x: W / 2 - 118 },
+        { id: 'gyro', text: t(this.player, 'aimGyro'), x: W / 2 + 118 },
+      ].forEach((mode) => {
+        this.addPanelHitButton(
+          mode.x,
+          aimY,
+          mode.text,
+          () => this.chooseAim(mode.id),
+          200,
+          aimH,
+          aim === mode.id ? 0x2a6a4a : pirate ? 0xc4a06a : 0x1a3448,
+          '15px',
+          { compact: true },
+        );
+      });
+    }
+
+    const audioH = tight ? 30 : 34;
+    const audioY = row(audioH);
     const soundLabel =
-      t(this.player, 'sound') +
+      t(this.player, 'sound') + ': ' + (this.player.soundOn ? t(this.player, 'on') : t(this.player, 'off'));
+    const musicLabel =
+      t(this.player, 'music') +
       ': ' +
-      (this.player.soundOn ? t(this.player, 'on') : t(this.player, 'off'));
+      (this.player.musicOn !== false ? t(this.player, 'on') : t(this.player, 'off'));
     this.addPanelHitButton(
-      W / 2,
-      Math.min(y, b.bottom - 26),
+      W / 2 - 118,
+      audioY,
       soundLabel,
       () => {
         this.player.soundOn = !this.player.soundOn;
@@ -1587,11 +1793,168 @@ export class MenuScene extends Phaser.Scene {
         }
         this.openPanel('settings');
       },
-      260,
-      44,
+      200,
+      audioH,
       pirate ? 0xc4a06a : 0x1a3448,
-      pirate ? '18px' : '16px',
+      '15px',
+      { compact: true },
     );
+    this.addPanelHitButton(
+      W / 2 + 118,
+      audioY,
+      musicLabel,
+      () => {
+        this.player.musicOn = this.player.musicOn === false;
+        savePlayer(this.player);
+        setMusicOn(this.player.musicOn);
+        this.openPanel('settings');
+      },
+      200,
+      audioH,
+      pirate ? 0xc4a06a : 0x1a3448,
+      '15px',
+      { compact: true },
+    );
+
+    const customName = this.player.customMusicName || '';
+    if (customName) {
+      const textY = y + 6;
+      this.panel.add(
+        this.add
+          .text(W / 2, textY, this.shortTrackName(customName), {
+            fontFamily: 'Segoe UI, system-ui, sans-serif',
+            fontSize: '13px',
+            color: pirate ? '#6a4a20' : '#9ec9e8',
+          })
+          .setOrigin(0.5),
+      );
+      y = textY + 14;
+    }
+    const fileY = row(audioH);
+    this.addPanelHitButton(
+      customName ? W / 2 - 118 : W / 2,
+      fileY,
+      t(this.player, 'musicPick'),
+      () => this.pickCustomMusic(),
+      customName ? 200 : 240,
+      audioH,
+      pirate ? 0xc4a06a : 0x1a3448,
+      '14px',
+      { compact: true },
+    );
+    if (customName) {
+      this.addPanelHitButton(
+        W / 2 + 118,
+        fileY,
+        t(this.player, 'musicStock'),
+        () => this.clearCustomMusic(),
+        200,
+        audioH,
+        pirate ? 0xc4a06a : 0x1a3448,
+        '14px',
+        { compact: true },
+      );
+    }
+  }
+
+  beginBattle() {
+    const go = () => {
+      if (!this.scene.isActive()) return;
+      const next = tryStartGame(this.player);
+      if (!next) {
+        this.needAnchors();
+        return;
+      }
+      this.player = next;
+      this.refreshHeader();
+      this.clearPanel();
+      this.scene.start('Game');
+    };
+    if (!getContour().mobile || this.player.aimControl !== 'gyro') {
+      const canvas = this.game?.canvas;
+      const request = canvas?.requestPointerLock?.();
+      if (request && typeof request.catch === 'function') request.catch(() => {});
+      go();
+      return;
+    }
+    const probe = createGyroAim();
+    probe.enable({ gesture: true }).then((ok) => {
+      probe.disable();
+      if (!this.scene.isActive()) return;
+      if (!ok) {
+        this.player.aimControl = 'buttons';
+        savePlayer(this.player);
+        this.toast(t(this.player, 'gyroDenied'));
+      }
+      go();
+    });
+  }
+
+  chooseAim(mode) {
+    if (mode !== 'gyro') {
+      this.player.aimControl = 'buttons';
+      savePlayer(this.player);
+      this.openPanel('settings');
+      return;
+    }
+    const probe = createGyroAim();
+    probe.enable({ gesture: true }).then((ok) => {
+      probe.disable();
+      if (!this.scene.isActive()) return;
+      if (!ok) {
+        this.player.aimControl = 'buttons';
+        savePlayer(this.player);
+        this.toast(t(this.player, 'gyroDenied'));
+      } else {
+        this.player.aimControl = 'gyro';
+        savePlayer(this.player);
+      }
+      this.openPanel('settings');
+    });
+  }
+
+  shortTrackName(name) {
+    const clean = String(name || '').replace(/\.[^.]+$/, '');
+    return clean.length > 32 ? `${clean.slice(0, 30)}…` : clean;
+  }
+
+  pickCustomMusic() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'audio/*,.mp3,.ogg,.wav,.m4a,.aac,.flac,.webm';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+    input.onchange = () => {
+      const file = input.files?.[0];
+      input.remove();
+      if (!file || !this.scene.isActive()) return;
+      useCustomMusic(file)
+        .then((name) => {
+          if (!this.scene.isActive()) return;
+          this.player.customMusicName = name;
+          this.player.musicOn = true;
+          savePlayer(this.player);
+          this.openPanel('settings');
+        })
+        .catch((err) => {
+          if (!this.scene.isActive()) return;
+          this.toast(t(this.player, err?.code === 'big' ? 'musicBig' : 'musicBad'));
+        });
+    };
+    input.click();
+  }
+
+  clearCustomMusic() {
+    resetCustomMusic()
+      .then(() => {
+        if (!this.scene.isActive()) return;
+        this.player.customMusicName = '';
+        savePlayer(this.player);
+        this.openPanel('settings');
+      })
+      .catch(() => {
+        if (this.scene.isActive()) this.toast(t(this.player, 'musicBad'));
+      });
   }
   addPanelHitButton(x, y, label, onClick, width = 280, height = 46, fill = 0x1a3448, fontSize = null, opts = {}) {
     const pirate = this.pirate && this.textures.exists('btn-wood');
@@ -1679,8 +2042,268 @@ export class MenuScene extends Phaser.Scene {
 
   /** Не хватает якорей — тост и открыть магазин (вкладка якорей) */
   needAnchors() {
+    if (getContour().ads && entryAdsLeft(this.player) > 0) {
+      this.openPanel('entryAd');
+      return;
+    }
     this.toast(t(this.player, 'notEnough'));
     this.shopTab = 'anchors';
     this.openPanel('shop');
+  }
+
+  buildYandexAnchorShop(listTop, listBottom) {
+    const pirate = this.pirate;
+    let top = listTop;
+    if (shopAdAvailable(this.player)) {
+      this.addPanelHitButton(
+        W / 2,
+        top + 22,
+        t(this.player, 'adShop'),
+        () => this.watchShopAd(),
+        280,
+        40,
+        0x2a6a4a,
+        '18px',
+        { compact: true },
+      );
+      top += 50;
+    }
+    const n = ANCHOR_PACKS.length;
+    const step = (listBottom - top) / n;
+    const rowH = Math.min(pirate ? 58 : 64, step - 6);
+    ANCHOR_PACKS.forEach((pack, i) => {
+      const y = top + step * i + step / 2;
+      const rowW = Math.min(pirate ? this.panelBounds().width - 12 : 600, this.panelBounds().width);
+      const product = yandexProduct(pack.id);
+      const rowBg = this.add
+        .rectangle(
+          W / 2,
+          y,
+          rowW,
+          rowH,
+          pirate ? (i % 2 === 0 ? 0xf3e2c0 : 0xead4a8) : 0x142838,
+          0.95,
+        )
+        .setStrokeStyle(1, pirate ? 0xc9a66a : 0x3a6a88);
+      this.panel.add(rowBg);
+      const icon = this.add.image(W / 2 - rowW / 2 + 36, y, 'icon-anchor');
+      icon.setDisplaySize(pirate ? 36 : 44, pirate ? 36 : 44);
+      this.panel.add(icon);
+      const tag = pack.tagKey ? `  ·  ${t(this.player, pack.tagKey)}` : '';
+      this.panel.add(
+        this.add
+          .text(W / 2 - rowW / 2 + 68, y, `${pack.anchors} ${anchorWord(this.player.lang, pack.anchors)}${tag}`, {
+            fontFamily: pirate ? 'Georgia, serif' : 'Segoe UI, system-ui, sans-serif',
+            fontSize: pirate ? '20px' : '22px',
+            color: pirate ? '#5a3410' : '#ffd27a',
+            fontStyle: '700',
+            stroke: pirate ? undefined : '#000',
+            strokeThickness: pirate ? 0 : 3,
+          })
+          .setOrigin(0, 0.5),
+      );
+      const price = product?.price || '—';
+      this.addPanelHitButton(
+        W / 2 + rowW / 2 - 96,
+        y,
+        price,
+        () => this.buyAnchorPack(pack),
+        168,
+        Math.min(36, rowH - 12),
+        0x2a6a4a,
+        '16px',
+        { compact: true },
+      );
+      if (this.textures.exists('portal-currency')) {
+        const coin = this.add.image(W / 2 + rowW / 2 - 168, y, 'portal-currency');
+        coin.setDisplaySize(18, 18);
+        this.panel.add(coin);
+      }
+    });
+  }
+
+  buyAnchorPack(pack) {
+    if (this.buyBusy) return;
+    if (!yandexProduct(pack.id)) {
+      this.toast(t(this.player, 'purchaseWait'));
+      return;
+    }
+    this.buyBusy = true;
+    purchaseProduct(pack.id)
+      .then((granted) => {
+        this.buyBusy = false;
+        if (!this.scene.isActive()) return;
+        this.player = loadPlayer();
+        this.refreshHeader();
+        if (granted > 0) this.toast(`+${granted} ${anchorWord(this.player.lang, granted)}`);
+        this.openPanel('shop');
+      })
+      .catch(() => {
+        this.buyBusy = false;
+        if (!this.scene.isActive()) return;
+        this.toast(t(this.player, 'purchaseFail'));
+      });
+  }
+
+  buildAnchorAdOffer(y) {
+    const pirate = this.pirate;
+    if (!shopAdAvailable(this.player)) {
+      this.panel.add(
+        this.add
+          .text(W / 2, y + 70, t(this.player, 'adShopDone'), {
+            fontFamily: pirate ? 'Georgia, serif' : 'Segoe UI, system-ui, sans-serif',
+            fontSize: '22px',
+            color: pirate ? '#5a3410' : '#ffd27a',
+            align: 'center',
+            wordWrap: { width: 420 },
+          })
+          .setOrigin(0.5),
+      );
+      return;
+    }
+    this.addPanelHitButton(
+      W / 2,
+      y + 70,
+      t(this.player, 'adShop'),
+      () => this.watchShopAd(),
+      300,
+      48,
+      0x2a6a4a,
+      '22px',
+    );
+  }
+
+  watchShopAd() {
+    if (this.adBusy || !shopAdAvailable(this.player)) return;
+    this.adBusy = true;
+    showRewarded().then((ok) => {
+      this.adBusy = false;
+      if (!this.scene.isActive()) return;
+      if (!ok) {
+        this.toast(t(this.player, 'adFail'));
+        return;
+      }
+      const claim = claimShopAd(this.player);
+      this.player = claim.state;
+      this.refreshHeader();
+      if (claim.granted > 0) {
+        this.toast(`+${SHOP_AD_ANCHORS} ${anchorWord(this.player.lang, SHOP_AD_ANCHORS)}`);
+      }
+      this.openPanel('shop');
+    });
+  }
+
+  buildEntryAdPanel() {
+    const pirate = this.pirate;
+    const b = this.panelBounds();
+    const left = entryAdsLeft(this.player);
+    this.addPanelTitle('adEntryTitle');
+    this.panel.add(
+      this.add
+        .text(W / 2, b.top + 100, `${t(this.player, 'adEntryButton')} · ${left}/3`, {
+          fontFamily: pirate ? 'Georgia, serif' : 'Segoe UI, system-ui, sans-serif',
+          fontSize: '22px',
+          color: pirate ? '#5a3410' : '#e8f4ff',
+          align: 'center',
+        })
+        .setOrigin(0.5),
+    );
+    this.addPanelHitButton(
+      W / 2,
+      b.top + 180,
+      t(this.player, 'adEntryButton'),
+      () => this.watchEntryAd(),
+      280,
+      48,
+      0x2a6a4a,
+      '22px',
+    );
+  }
+
+  watchEntryAd() {
+    if (this.adBusy || entryAdsLeft(this.player) <= 0) return;
+    this.adBusy = true;
+    showRewarded().then((ok) => {
+      this.adBusy = false;
+      if (!this.scene.isActive()) return;
+      if (!ok) {
+        this.toast(t(this.player, 'adFail'));
+        return;
+      }
+      this.player = consumeEntryAd(this.player);
+      this.beginBattle();
+    });
+  }
+
+  buildPrizesPanel() {
+    const pirate = this.pirate;
+    const b = this.panelBounds();
+    const mode = this.prizeMode === 'monthly' ? 'monthly' : 'daily';
+    this.addPanelTitle('prizes');
+    this.addPanelHitButton(
+      W / 2 - 90,
+      b.top + 52,
+      t(this.player, 'daily'),
+      () => {
+        this.prizeMode = 'daily';
+        this.openPanel('prizes');
+      },
+      150,
+      36,
+      mode === 'daily' ? 0x2a6a4a : pirate ? 0xc4a06a : 0x1a3448,
+      '18px',
+      { compact: true },
+    );
+    this.addPanelHitButton(
+      W / 2 + 90,
+      b.top + 52,
+      t(this.player, 'monthly'),
+      () => {
+        this.prizeMode = 'monthly';
+        this.openPanel('prizes');
+      },
+      150,
+      36,
+      mode === 'monthly' ? 0x2a6a4a : pirate ? 0xc4a06a : 0x1a3448,
+      '18px',
+      { compact: true },
+    );
+
+    const rewards = this.prizeCache?.[mode] || ['…', '…', '…'];
+    const rows = buildLeaderboard(this.player, mode).slice(0, 3);
+    rows.forEach((row, i) => {
+      const y = b.top + 120 + i * 72;
+      const reward = rewards[i] || t(this.player, 'prizeEmpty');
+      this.panel.add(
+        this.add
+          .text(b.left, y, `${row.place}.  ${row.name}`, {
+            fontFamily: pirate ? 'Georgia, serif' : 'Segoe UI, system-ui, sans-serif',
+            fontSize: '22px',
+            color: row.me ? (pirate ? '#8a3a12' : '#ffd27a') : pirate ? '#3a2208' : '#e8f4ff',
+            fontStyle: '700',
+          })
+          .setOrigin(0, 0.5),
+      );
+      this.panel.add(
+        this.add
+          .text(b.right, y, reward, {
+            fontFamily: pirate ? 'Georgia, serif' : 'Segoe UI, system-ui, sans-serif',
+            fontSize: '18px',
+            color: pirate ? '#6a4a20' : '#9ec9e8',
+            align: 'right',
+            wordWrap: { width: 220 },
+          })
+          .setOrigin(1, 0.5),
+      );
+    });
+
+    if (!this.prizeCache && !this.prizeLoading) {
+      this.prizeLoading = true;
+      loadPrizes().then((data) => {
+        this.prizeLoading = false;
+        this.prizeCache = data;
+        if (this.scene.isActive() && this.panelKind === 'prizes') this.openPanel('prizes');
+      });
+    }
   }
 }
